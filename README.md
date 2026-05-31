@@ -42,6 +42,25 @@ npm run preview        # serveert /dist op poort 4173 om de PWA te testen
 
 De build produceert een statische site met service worker en manifest — host op Vercel, Netlify, Cloudflare Pages of een eigen statische webserver. Voor installatie op een toestel moet de site via HTTPS bereikbaar zijn (localhost werkt ook).
 
+## Vragen-generatie (cron)
+
+Een Node-script (`scripts/generate-questions.mjs`) leest de Supabase wachtrij `generation_requests` (status `queued`), genereert vragen via Claude op basis van de bronnen van de leerkracht, en schrijft ze terug als een nieuwe `question_banks` rij met status `pending_review`. De leerkracht ziet ze daarna onder *Vragen beheren*.
+
+Trigger:
+- **Automatisch**: GitHub Actions cron — elke nacht om 03:00 UTC (`.github/workflows/generate.yml`).
+- **Handmatig**: `gh workflow run "Generate questions (cron)" --repo <user>/<repo>` of via *Actions → Run workflow*.
+- **Lokaal**: `cd scripts && cp .env.example .env && npm run generate`.
+
+**Vereiste secrets** (`Settings → Secrets and variables → Actions`):
+
+| Naam | Waar te vinden |
+|------|----------------|
+| `SUPABASE_URL` | Supabase Dashboard → Project Settings → API Keys |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Dashboard → Project Settings → API Keys → **service_role** (LET OP: nooit in de browser) |
+| `ANTHROPIC_API_KEY` | <https://console.anthropic.com> → API Keys |
+
+> De service_role key omzeilt RLS — daarom enkel server-side gebruiken (CI of jouw eigen machine). Verschillend van de anon-key die in de PWA terechtkomt.
+
 ## Deploy naar GitHub Pages
 
 De repo bevat een workflow (`.github/workflows/deploy.yml`) die bij elke push naar `main` de PWA bouwt en publiceert. Eénmalige setup:

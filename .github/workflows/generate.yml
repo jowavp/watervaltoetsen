@@ -1,0 +1,45 @@
+name: Generate questions (cron)
+
+on:
+  schedule:
+    # Elke nacht om 03:00 UTC (= 04:00 winter / 05:00 zomer in BE)
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      max_requests:
+        description: 'Max aanvragen per run'
+        required: false
+        default: '10'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generate-questions
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scripts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+
+      - name: Install deps
+        run: npm ci || npm install
+
+      - name: Run generator
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MAX_REQUESTS: ${{ inputs.max_requests || '10' }}
+        run: npm run generate

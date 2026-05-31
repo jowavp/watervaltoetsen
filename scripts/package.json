@@ -1,0 +1,13 @@
+{
+  "name": "waterval-generate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node generate-questions.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "@supabase/supabase-js": "^2.45.4"
+  }
+}

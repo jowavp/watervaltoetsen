@@ -1,36 +1,17 @@
 import { useEffect, useState } from 'react';
 import D from '../../lib/data.js';
 import { Druppie, Teacher } from '../../components/Characters.jsx';
-import { loadTeacherLocal, saveBanks, saveSources, saveTeacherProfile } from '../../lib/storage.js';
-import { signOut } from '../../lib/supabase.js';
+import { loadTeacherLocal, saveTeacherProfile } from '../../lib/storage.js';
+import { signOut, supabaseEnabled } from '../../lib/supabase.js';
+import { listSources } from '../../lib/sources.js';
+import { publishLocalBank } from '../../lib/questions.js';
 import VakkenScreen from './VakkenScreen.jsx';
+import StreamScreen, { STREAMS } from './StreamScreen.jsx';
+import QuestionsScreen from './QuestionsScreen.jsx';
+import GenerateScreen from './GenerateScreen.jsx';
 
 const TYPE_LABEL = { mc: 'Meerkeuze', tf: 'Juist/fout', fill: 'Invul', match: 'Koppel' };
 const TYPE_COLOR = { mc: '#1fa9ce', tf: '#5fbe82', fill: '#ff9e2c', match: '#9b8cff' };
-
-const STREAMS = {
-  onthoudmap: {
-    naam: 'Onthoudmap',
-    desc: 'Wat de kinderen moeten kennen voor hun toetsen',
-    icon: '📒',
-    kleur: '#1fa9ce',
-    vakgebonden: true
-  },
-  contracten: {
-    naam: 'Voorbeeldcontracten',
-    desc: 'Voorbeeldoefeningen zoals in de toets · vakoverschrijdend',
-    icon: '📑',
-    kleur: '#9b8cff',
-    vakgebonden: false
-  },
-  werkbladen: {
-    naam: 'Werkbladen',
-    desc: 'Theorie en oefeningen per vak',
-    icon: '📝',
-    kleur: '#5fbe82',
-    vakgebonden: true
-  }
-};
 
 // ──────── lokale vraagbank-generator (template-based) ────────
 const rnd = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
@@ -197,7 +178,7 @@ function TeacherProfile({ teacher, onSave, onClose, onSignOut, firstRun }) {
 }
 
 // ──────── Admin home: kennisbronnen ────────
-function AdminHome({ teacher, sources, leerjaar, onLeerjaar, onStream, onVakken, onGenerate, onExit, onProfiel }) {
+function AdminHome({ teacher, sources, leerjaar, onLeerjaar, onStream, onVakken, onQuestions, onGenerate, onExit, onProfiel }) {
   const totaalDocs = Object.keys(STREAMS).reduce((s, k) => s + sources[k].length, 0);
   return (
     <div className="screen" style={{ background: 'var(--cream)' }}>
@@ -265,35 +246,65 @@ function AdminHome({ teacher, sources, leerjaar, onLeerjaar, onStream, onVakken,
         })}
       </div>
 
-      <button
-        className="tap"
-        onClick={onVakken}
-        style={{
-          textAlign: 'left',
-          background: '#fff',
-          borderRadius: 16,
-          padding: '12px 14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          boxShadow: '0 4px 0 rgba(40,52,59,0.06)',
-          border: 'none',
-          borderLeft: '6px solid var(--water)',
-          cursor: 'pointer',
-          marginBottom: 14
-        }}
-      >
-        <span style={{ fontSize: 22 }}>🎒</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>
-            Vakken beheren
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+        <button
+          className="tap"
+          onClick={onVakken}
+          style={{
+            textAlign: 'left',
+            background: '#fff',
+            borderRadius: 16,
+            padding: '12px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            boxShadow: '0 4px 0 rgba(40,52,59,0.06)',
+            border: 'none',
+            borderLeft: '6px solid var(--water)',
+            cursor: 'pointer'
+          }}
+        >
+          <span style={{ fontSize: 22 }}>🎒</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>
+              Vakken beheren
+            </div>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)' }}>
+              Toevoegen, hernoemen, kleuren — per leerjaar
+            </div>
           </div>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)' }}>
-            Toevoegen, hernoemen, kleuren — per leerjaar
+          <span style={{ color: 'var(--ink-soft)', fontSize: 18, fontWeight: 800 }}>›</span>
+        </button>
+
+        <button
+          className="tap"
+          onClick={onQuestions}
+          style={{
+            textAlign: 'left',
+            background: '#fff',
+            borderRadius: 16,
+            padding: '12px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            boxShadow: '0 4px 0 rgba(40,52,59,0.06)',
+            border: 'none',
+            borderLeft: '6px solid var(--sun-deep)',
+            cursor: 'pointer'
+          }}
+        >
+          <span style={{ fontSize: 22 }}>📝</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>
+              Vragen beheren
+            </div>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)' }}>
+              Bekijken, deactiveren of verwijderen — per leerjaar/vak
+            </div>
           </div>
-        </div>
-        <span style={{ color: 'var(--ink-soft)', fontSize: 18, fontWeight: 800 }}>›</span>
-      </button>
+          <span style={{ color: 'var(--ink-soft)', fontSize: 18, fontWeight: 800 }}>›</span>
+        </button>
+      </div>
 
       <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-soft)', letterSpacing: 0.4, marginBottom: 8 }}>
         KENNISBRONNEN · LEERJAAR {leerjaar}
@@ -364,181 +375,12 @@ function AdminHome({ teacher, sources, leerjaar, onLeerjaar, onStream, onVakken,
         </div>
       </div>
       <button className="cta tap" onClick={onGenerate} style={{ width: '100%', marginTop: 12 }}>
-        ✨ Genereer 50 kwisvragen
+        ✨ Vragen genereren — per vak
       </button>
     </div>
   );
 }
 
-// ──────── Kennisbron beheren ────────
-function StreamScreen({ streamKey, sources, onAdd, onBack }) {
-  const st = STREAMS[streamKey];
-  const docs = sources[streamKey];
-  const [adding, setAdding] = useState(false);
-  const [titel, setTitel] = useState('');
-  const [vak, setVak] = useState('wiskunde');
-  const [file, setFile] = useState(null);
-  const ready = titel.trim().length > 1;
-  const reset = () => {
-    setTitel('');
-    setFile(null);
-    setAdding(false);
-  };
-  return (
-    <div className="screen" style={{ background: 'var(--cream)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 2px 10px' }}>
-        <button className="iconbtn" onClick={onBack}>
-          ‹
-        </button>
-        <span style={{ fontSize: 22 }}>{st.icon}</span>
-        <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 18, color: 'var(--ink)' }}>{st.naam}</div>
-      </div>
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink-soft)', marginBottom: 12 }}>{st.desc}.</div>
-
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 9 }}>
-        {docs.map((d, i) => (
-          <div
-            key={i}
-            style={{
-              background: '#fff',
-              borderRadius: 13,
-              padding: '11px 13px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 11,
-              boxShadow: '0 3px 0 rgba(40,52,59,0.06)'
-            }}
-          >
-            <span style={{ fontSize: 20 }}>📄</span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 800, fontSize: 14, color: 'var(--ink)' }}>{d.title}</div>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)' }}>
-                {st.vakgebonden && d.vak ? D.vakken[d.vak].naam : 'vakoverschrijdend'}
-                {d.name ? ' · ' + d.name : ''}
-              </div>
-            </div>
-          </div>
-        ))}
-        {docs.length === 0 && (
-          <div style={{ textAlign: 'center', color: 'var(--ink-soft)', fontWeight: 700, fontSize: 13, padding: '20px 0' }}>
-            Nog geen documenten.
-          </div>
-        )}
-
-        {adding && (
-          <div
-            style={{
-              background: '#fff',
-              borderRadius: 16,
-              padding: 14,
-              boxShadow: '0 4px 0 rgba(40,52,59,0.06)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 12,
-              marginTop: 4
-            }}
-          >
-            <input
-              value={titel}
-              onChange={(e) => setTitel(e.target.value)}
-              placeholder="Titel van het document"
-              className="inp"
-            />
-            {st.vakgebonden && (
-              <div style={{ display: 'flex', gap: 8 }}>
-                {Object.keys(D.vakken).map((kk) => {
-                  const vi = D.vakken[kk];
-                  const sel = vak === kk;
-                  return (
-                    <button
-                      key={kk}
-                      className="tap"
-                      onClick={() => setVak(kk)}
-                      style={{
-                        flex: 1,
-                        padding: '9px 4px',
-                        borderRadius: 11,
-                        fontFamily: 'var(--display)',
-                        fontWeight: 600,
-                        fontSize: 13,
-                        cursor: 'pointer',
-                        background: sel ? vi.kleur : 'var(--cream)',
-                        color: sel ? '#fff' : 'var(--ink)',
-                        border: 'none'
-                      }}
-                    >
-                      {vi.naam}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            <button
-              className="tap"
-              onClick={() =>
-                setFile(
-                  file
-                    ? null
-                    : { name: (titel.trim() ? titel.trim().toLowerCase().replace(/\s+/g, '-') : 'document') + '.pdf' }
-                )
-              }
-              style={{
-                border: '2.5px dashed var(--border)',
-                background: 'var(--cream)',
-                borderRadius: 14,
-                padding: '14px',
-                cursor: 'pointer',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 5
-              }}
-            >
-              <span style={{ fontSize: 22 }}>{file ? '📄' : '⬆️'}</span>
-              <span style={{ fontWeight: 800, fontSize: 13, color: 'var(--ink)' }}>
-                {file ? file.name : 'Sleep een PDF/foto of tik om te kiezen'}
-              </span>
-            </button>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="cta-ghost tap" onClick={reset} style={{ flex: 1 }}>
-                Annuleer
-              </button>
-              <button
-                className="cta tap"
-                disabled={!ready}
-                onClick={() => {
-                  onAdd(streamKey, {
-                    title: titel.trim(),
-                    vak: st.vakgebonden ? vak : null,
-                    name: file ? file.name : null
-                  });
-                  reset();
-                }}
-                style={{
-                  flex: 2,
-                  background: st.kleur,
-                  boxShadow: `0 5px 0 ${st.kleur}99`,
-                  opacity: ready ? 1 : 0.45
-                }}
-              >
-                Toevoegen
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-      {!adding && (
-        <button
-          className="cta tap"
-          onClick={() => setAdding(true)}
-          style={{ width: '100%', marginTop: 12, background: st.kleur, boxShadow: `0 5px 0 ${st.kleur}99` }}
-        >
-          + Document toevoegen
-        </button>
-      )}
-    </div>
-  );
-}
 
 function AdminGenerating({ doel }) {
   return (
@@ -760,16 +602,6 @@ function AdminDone({ count, onHome }) {
 
 export default function AdminApp({ onExit, authUser }) {
   const initial = loadTeacherLocal();
-  const seededSources = {
-    onthoudmap: [
-      { title: 'Onthoudmap lj5 — wiskunde', vak: 'wiskunde', name: 'onthoudmap-wiskunde.pdf' },
-      { title: 'Onthoudmap lj5 — Frans', vak: 'frans', name: 'onthoudmap-frans.pdf' }
-    ],
-    contracten: [{ title: 'Contract 7 — herfst', name: 'contract-7.pdf' }],
-    werkbladen: [{ title: 'Werkblad breuken', vak: 'wiskunde', name: 'werkblad-breuken.pdf' }]
-  };
-  const startSources =
-    initial.sources && Object.values(initial.sources).some((arr) => arr.length) ? initial.sources : seededSources;
 
   // Pre-fill profiel vanuit Google bij eerste login.
   const googleNaam = authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || '';
@@ -788,13 +620,14 @@ export default function AdminApp({ onExit, authUser }) {
 
   const [teacher, setTeacher] = useState(initialTeacher);
   const [step, setStep] = useState(initialTeacher.naam ? 'home' : 'profiel');
-  const [sources, setSourcesState] = useState(startSources);
+  const [sources, setSourcesState] = useState({ onthoudmap: [], contracten: [], werkbladen: [] });
   const [stream, setStream] = useState(null);
   const [bank, setBank] = useState([]);
   const [approved, setApproved] = useState([]);
   const [count, setCount] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [leerjaar, setLeerjaar] = useState(5);
+  const [publishError, setPublishError] = useState(null);
 
   // Eenmalige sync: als we Google-data hebben en het profiel was leeg, schrijf
   // de pre-filled waarden ook door naar Supabase + localStorage.
@@ -805,6 +638,21 @@ export default function AdminApp({ onExit, authUser }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Sources uit Supabase per (leerjaar) — herlaadt wanneer leerjaar wijzigt of
+  // wanneer een onderliggend scherm `onChanged()` triggert.
+  const reloadSources = async () => {
+    if (!supabaseEnabled) return;
+    try {
+      setSourcesState(await listSources(leerjaar));
+    } catch (e) {
+      console.warn('[admin] listSources:', e.message);
+    }
+  };
+  useEffect(() => {
+    reloadSources();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leerjaar]);
+
   const saveTeacher = (t) => {
     const nt = { ...teacher, ...t };
     setTeacher(nt);
@@ -812,22 +660,12 @@ export default function AdminApp({ onExit, authUser }) {
     setStep('home');
   };
 
-  const persistSources = (next) => {
-    setSourcesState(next);
-    saveSources(next);
-  };
-
   const activeVakken = () => {
     const set = new Set();
-    sources.onthoudmap.forEach((d) => d.vak && set.add(d.vak));
-    sources.werkbladen.forEach((d) => d.vak && set.add(d.vak));
+    (sources.onthoudmap || []).forEach((d) => d.vak && set.add(d.vak));
+    (sources.werkbladen || []).forEach((d) => d.vak && set.add(d.vak));
     const arr = [...set];
     return arr.length ? arr : ['wiskunde', 'nederlands', 'frans'];
-  };
-
-  const addDoc = (key, doc) => {
-    const next = { ...sources, [key]: [...sources[key], doc] };
-    persistSources(next);
   };
 
   const generate = async () => {
@@ -853,11 +691,17 @@ export default function AdminApp({ onExit, authUser }) {
     setLoadingMore(false);
   };
 
-  const publish = (n) => {
-    const published = bank.filter((_, i) => approved[i]);
-    saveBanks(published);
-    setCount(n);
-    setStep('done');
+  const publish = async (n) => {
+    setPublishError(null);
+    try {
+      if (supabaseEnabled) {
+        await publishLocalBank({ leerjaar, vragen: bank, approved });
+      }
+      setCount(n);
+      setStep('done');
+    } catch (e) {
+      setPublishError(e.message);
+    }
   };
 
   return (
@@ -885,7 +729,8 @@ export default function AdminApp({ onExit, authUser }) {
             setStep('stream');
           }}
           onVakken={() => setStep('vakken')}
-          onGenerate={generate}
+          onQuestions={() => setStep('questions')}
+          onGenerate={() => setStep('generate')}
           onExit={onExit}
           onProfiel={() => setStep('profiel')}
         />
@@ -893,8 +738,24 @@ export default function AdminApp({ onExit, authUser }) {
       {step === 'vakken' && (
         <VakkenScreen leerjaar={leerjaar} onLeerjaar={setLeerjaar} onBack={() => setStep('home')} />
       )}
+      {step === 'questions' && (
+        <QuestionsScreen leerjaar={leerjaar} onLeerjaar={setLeerjaar} onBack={() => setStep('home')} />
+      )}
+      {step === 'generate' && (
+        <GenerateScreen
+          leerjaar={leerjaar}
+          onLeerjaar={setLeerjaar}
+          onBack={() => setStep('home')}
+          onSeeQuestions={() => setStep('questions')}
+        />
+      )}
       {step === 'stream' && (
-        <StreamScreen streamKey={stream} sources={sources} onAdd={addDoc} onBack={() => setStep('home')} />
+        <StreamScreen
+          streamKey={stream}
+          leerjaar={leerjaar}
+          onBack={() => setStep('home')}
+          onChanged={reloadSources}
+        />
       )}
       {step === 'gen' && <AdminGenerating doel={50} />}
       {step === 'review' && (
