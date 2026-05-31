@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import D from '../../lib/data.js';
 import { Druppie, Teacher } from '../../components/Characters.jsx';
 import { loadTeacherLocal, saveBanks, saveSources, saveTeacherProfile } from '../../lib/storage.js';
+import { signOut } from '../../lib/supabase.js';
 import VakkenScreen from './VakkenScreen.jsx';
 
 const TYPE_LABEL = { mc: 'Meerkeuze', tf: 'Juist/fout', fill: 'Invul', match: 'Koppel' };
@@ -102,16 +103,36 @@ function makeBank(n, vakken) {
 }
 
 // ──────── Leerkracht-profiel ────────
-function TeacherProfile({ teacher, onSave, onClose, firstRun }) {
+function TeacherProfile({ teacher, onSave, onClose, onSignOut, firstRun }) {
   const [naam, setNaam] = useState(teacher.naam || '');
   const [who, setWho] = useState(teacher.who || 'tom');
   return (
     <div className="screen" style={{ background: 'var(--cream)' }}>
       {!firstRun && (
-        <div style={{ display: 'flex', padding: '4px 2px 8px' }}>
+        <div style={{ display: 'flex', padding: '4px 2px 8px', alignItems: 'center' }}>
           <button className="iconbtn" onClick={onClose}>
             ✕
           </button>
+          {onSignOut && (
+            <button
+              className="tap"
+              onClick={onSignOut}
+              style={{
+                marginLeft: 'auto',
+                border: 'none',
+                background: '#fff',
+                color: 'var(--coral)',
+                borderRadius: 999,
+                padding: '7px 12px',
+                fontWeight: 800,
+                fontSize: 12,
+                cursor: 'pointer',
+                boxShadow: '0 3px 0 rgba(40,52,59,0.08)'
+              }}
+            >
+              ↪ Uitloggen
+            </button>
+          )}
         </div>
       )}
       <div style={{ flex: 1, overflowY: 'auto', textAlign: 'center' }}>
@@ -121,6 +142,11 @@ function TeacherProfile({ teacher, onSave, onClose, firstRun }) {
         <div style={{ fontFamily: 'var(--display)', fontWeight: 700, fontSize: 23, color: 'var(--ink)', margin: '14px 0 2px' }}>
           {firstRun ? 'Welkom, leerkracht!' : 'Mijn profiel'}
         </div>
+        {teacher.email && (
+          <div style={{ color: 'var(--ink-soft)', fontWeight: 700, fontSize: 12, marginBottom: 4 }}>
+            Aangemeld als <b style={{ color: 'var(--ink)' }}>{teacher.email}</b>
+          </div>
+        )}
         <div style={{ color: 'var(--ink-soft)', fontWeight: 700, fontSize: 14, marginBottom: 18 }}>
           Kies je naam en je avatar.
         </div>
@@ -732,7 +758,7 @@ function AdminDone({ count, onHome }) {
   );
 }
 
-export default function AdminApp({ onExit }) {
+export default function AdminApp({ onExit, authUser }) {
   const initial = loadTeacherLocal();
   const seededSources = {
     onthoudmap: [
@@ -745,8 +771,23 @@ export default function AdminApp({ onExit }) {
   const startSources =
     initial.sources && Object.values(initial.sources).some((arr) => arr.length) ? initial.sources : seededSources;
 
-  const [teacher, setTeacher] = useState(initial.teacher || {});
-  const [step, setStep] = useState(initial.teacher && initial.teacher.naam ? 'home' : 'profiel');
+  // Pre-fill profiel vanuit Google bij eerste login.
+  const googleNaam = authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || '';
+  const googleEmail = authUser?.email || '';
+
+  const initialTeacher = (() => {
+    const base = initial.teacher || {};
+    if (!base.naam && googleNaam) {
+      return { naam: googleNaam, email: googleEmail, who: base.who || 'tom' };
+    }
+    if (googleEmail && base.email !== googleEmail) {
+      return { ...base, email: googleEmail };
+    }
+    return base;
+  })();
+
+  const [teacher, setTeacher] = useState(initialTeacher);
+  const [step, setStep] = useState(initialTeacher.naam ? 'home' : 'profiel');
   const [sources, setSourcesState] = useState(startSources);
   const [stream, setStream] = useState(null);
   const [bank, setBank] = useState([]);
@@ -754,6 +795,15 @@ export default function AdminApp({ onExit }) {
   const [count, setCount] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [leerjaar, setLeerjaar] = useState(5);
+
+  // Eenmalige sync: als we Google-data hebben en het profiel was leeg, schrijf
+  // de pre-filled waarden ook door naar Supabase + localStorage.
+  useEffect(() => {
+    if (!initial.teacher?.naam && googleNaam) {
+      saveTeacherProfile(initialTeacher);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const saveTeacher = (t) => {
     const nt = { ...teacher, ...t };
@@ -818,6 +868,10 @@ export default function AdminApp({ onExit }) {
           firstRun={!teacher.naam}
           onSave={saveTeacher}
           onClose={() => setStep('home')}
+          onSignOut={async () => {
+            await signOut();
+            // Shell's onAuthStateChange triggert SIGNED_OUT → terug naar launcher.
+          }}
         />
       )}
       {step === 'home' && (
