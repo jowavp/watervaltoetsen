@@ -2,6 +2,7 @@ import { useState } from 'react';
 import D from '../../lib/data.js';
 import { Druppie, Teacher } from '../../components/Characters.jsx';
 import { loadTeacherLocal, saveBanks, saveSources, saveTeacherProfile } from '../../lib/storage.js';
+import VakkenScreen from './VakkenScreen.jsx';
 
 const TYPE_LABEL = { mc: 'Meerkeuze', tf: 'Juist/fout', fill: 'Invul', match: 'Koppel' };
 const TYPE_COLOR = { mc: '#1fa9ce', tf: '#5fbe82', fill: '#ff9e2c', match: '#9b8cff' };
@@ -170,7 +171,7 @@ function TeacherProfile({ teacher, onSave, onClose, firstRun }) {
 }
 
 // ──────── Admin home: kennisbronnen ────────
-function AdminHome({ teacher, sources, onStream, onGenerate, onExit, onProfiel }) {
+function AdminHome({ teacher, sources, leerjaar, onLeerjaar, onStream, onVakken, onGenerate, onExit, onProfiel }) {
   const totaalDocs = Object.keys(STREAMS).reduce((s, k) => s + sources[k].length, 0);
   return (
     <div className="screen" style={{ background: 'var(--cream)' }}>
@@ -208,30 +209,68 @@ function AdminHome({ teacher, sources, onStream, onGenerate, onExit, onProfiel }
         </button>
       </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-        {[1, 2, 3, 4, 5, 6].map((n) => (
-          <div
-            key={n}
-            style={{
-              flex: 1,
-              height: 34,
-              borderRadius: 11,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontFamily: 'var(--display)',
-              fontWeight: 600,
-              fontSize: 14,
-              background: n === 5 ? 'var(--water)' : '#fff',
-              color: n === 5 ? '#fff' : '#c3bcae',
-              boxShadow: n === 5 ? '0 3px 0 var(--water-dark)' : '0 2px 0 rgba(40,52,59,0.06)'
-            }}
-          >
-            {n}
-          </div>
-        ))}
+        {[1, 2, 3, 4, 5, 6].map((n) => {
+          const active = n === leerjaar;
+          return (
+            <button
+              key={n}
+              className="tap"
+              onClick={() => onLeerjaar(n)}
+              style={{
+                flex: 1,
+                height: 34,
+                borderRadius: 11,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontFamily: 'var(--display)',
+                fontWeight: 600,
+                fontSize: 14,
+                cursor: 'pointer',
+                border: 'none',
+                background: active ? 'var(--water)' : '#fff',
+                color: active ? '#fff' : 'var(--ink)',
+                boxShadow: active ? '0 3px 0 var(--water-dark)' : '0 2px 0 rgba(40,52,59,0.06)'
+              }}
+            >
+              {n}
+            </button>
+          );
+        })}
       </div>
+
+      <button
+        className="tap"
+        onClick={onVakken}
+        style={{
+          textAlign: 'left',
+          background: '#fff',
+          borderRadius: 16,
+          padding: '12px 14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          boxShadow: '0 4px 0 rgba(40,52,59,0.06)',
+          border: 'none',
+          borderLeft: '6px solid var(--water)',
+          cursor: 'pointer',
+          marginBottom: 14
+        }}
+      >
+        <span style={{ fontSize: 22 }}>🎒</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>
+            Vakken beheren
+          </div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)' }}>
+            Toevoegen, hernoemen, kleuren — per leerjaar
+          </div>
+        </div>
+        <span style={{ color: 'var(--ink-soft)', fontSize: 18, fontWeight: 800 }}>›</span>
+      </button>
+
       <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--ink-soft)', letterSpacing: 0.4, marginBottom: 8 }}>
-        KENNISBRONNEN · LEERJAAR 5
+        KENNISBRONNEN · LEERJAAR {leerjaar}
       </div>
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {Object.keys(STREAMS).map((k) => {
@@ -714,6 +753,7 @@ export default function AdminApp({ onExit }) {
   const [approved, setApproved] = useState([]);
   const [count, setCount] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [leerjaar, setLeerjaar] = useState(5);
 
   const saveTeacher = (t) => {
     const nt = { ...teacher, ...t };
@@ -784,14 +824,20 @@ export default function AdminApp({ onExit }) {
         <AdminHome
           teacher={teacher}
           sources={sources}
+          leerjaar={leerjaar}
+          onLeerjaar={setLeerjaar}
           onStream={(k) => {
             setStream(k);
             setStep('stream');
           }}
+          onVakken={() => setStep('vakken')}
           onGenerate={generate}
           onExit={onExit}
           onProfiel={() => setStep('profiel')}
         />
+      )}
+      {step === 'vakken' && (
+        <VakkenScreen leerjaar={leerjaar} onLeerjaar={setLeerjaar} onBack={() => setStep('home')} />
       )}
       {step === 'stream' && (
         <StreamScreen streamKey={stream} sources={sources} onAdd={addDoc} onBack={() => setStep('home')} />
