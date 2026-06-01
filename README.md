@@ -48,8 +48,11 @@ Een Node-script (`scripts/generate-questions.mjs`) leest de Supabase wachtrij `g
 
 Trigger:
 - **Automatisch**: GitHub Actions cron — elke nacht om 03:00 UTC (`.github/workflows/generate.yml`).
-- **Handmatig**: `gh workflow run "Generate questions (cron)" --repo <user>/<repo>` of via *Actions → Run workflow*.
-- **Lokaal**: `cd scripts && cp .env.example .env && npm run generate`.
+- **Handmatig in CI**: `gh workflow run "Generate questions (cron)" --repo <user>/<repo>` of via *Actions → Run workflow*.
+- **Lokaal met Gemini/Anthropic API**: `cd scripts && cp .env.example .env && npm run generate`.
+- **Lokaal met je Claude Code Pro-sessie** (geen API credits nodig): zet `LLM_PROVIDER=claude-code` in `scripts/.env`, zorg dat je via `claude` CLI ingelogd bent met je Pro/Max-account, en run `npm run generate`. Of, vanuit een Claude Code sessie in deze repo: `/generate-questions`.
+
+> De Claude Code-route omzeilt de Anthropic API en gebruikt je abonnement-quota. Verschil met CI: de cron-workflow heeft geen `claude` CLI beschikbaar — daar gebruik je Gemini of Anthropic API.
 
 **Vereiste secrets** (`Settings → Secrets and variables → Actions`):
 

@@ -26,7 +26,8 @@ const MAX_REQUESTS = parseInt(process.env.MAX_REQUESTS || '10', 10);
 
 const DEFAULT_MODEL = {
   gemini: 'gemini-2.5-flash',
-  anthropic: 'claude-haiku-4-5-20251001'
+  anthropic: 'claude-haiku-4-5-20251001',
+  'claude-code': undefined // laat de SDK de default van de CLI gebruiken
 };
 const MODEL = process.env.MODEL || DEFAULT_MODEL[PROVIDER] || DEFAULT_MODEL.gemini;
 
@@ -42,6 +43,14 @@ if (PROVIDER === 'gemini' && !process.env.GEMINI_API_KEY) {
 if (PROVIDER === 'anthropic' && !process.env.ANTHROPIC_API_KEY) {
   console.error('LLM_PROVIDER=anthropic, maar ANTHROPIC_API_KEY ontbreekt.');
   process.exit(1);
+}
+if (PROVIDER === 'claude-code') {
+  // Verwijder ANTHROPIC_API_KEY zodat de Claude Code CLI de Pro/Max-sessie gebruikt
+  // i.p.v. API-credits.
+  if (process.env.ANTHROPIC_API_KEY) {
+    console.log('• ANTHROPIC_API_KEY weggeknipt — Claude Code gebruikt je Pro-sessie.');
+    delete process.env.ANTHROPIC_API_KEY;
+  }
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -80,8 +89,47 @@ async function callClaude(prompt) {
     .join('');
 }
 
+// Gebruikt de geauthenticeerde Claude Code CLI lokaal — pakt je Pro/Max-abonnement
+// i.p.v. API-credits. Vereist `claude` in PATH en een actieve `/login` sessie.
+async function callClaudeCode(prompt) {
+  const { query } = await import('@anthropic-ai/claude-agent-sdk');
+  let finalText = '';
+  let resultSeen = false;
+  for await (const msg of query({
+    prompt,
+    options: {
+      // Eén-shot LLM-call: geen tools, geen project-context, één turn.
+      allowedTools: [],
+      settingSources: [],
+      maxTurns: 1,
+      ...(MODEL ? { model: MODEL } : {})
+    }
+  })) {
+    if (msg.type === 'assistant' && msg.message?.content) {
+      for (const block of msg.message.content) {
+        if (block && typeof block === 'object' && 'text' in block && typeof block.text === 'string') {
+          finalText += block.text;
+        }
+      }
+    } else if (msg.type === 'result') {
+      resultSeen = true;
+      if (msg.subtype !== 'success') {
+        throw new Error(`Claude Code SDK: ${msg.subtype}`);
+      }
+      // De SDK retourneert ook `result` als string (in de meeste versies).
+      if (typeof msg.result === 'string' && msg.result.length > finalText.length) {
+        finalText = msg.result;
+      }
+    }
+  }
+  if (!resultSeen) throw new Error('Claude Code SDK gaf geen result-message terug.');
+  if (!finalText.trim()) throw new Error('Claude Code SDK gaf geen tekst terug.');
+  return finalText;
+}
+
 async function callLLM(prompt) {
   if (PROVIDER === 'anthropic') return callClaude(prompt);
+  if (PROVIDER === 'claude-code') return callClaudeCode(prompt);
   return callGemini(prompt);
 }
 
