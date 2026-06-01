@@ -22,13 +22,6 @@ create table if not exists public.progress (
   primary key (user_id, node_id)
 );
 
--- ──────────────── vak_order ────────────────
-create table if not exists public.vak_order (
-  user_id     uuid primary key references auth.users (id) on delete cascade,
-  ordering    text[] not null,
-  updated_at  timestamptz not null default now()
-);
-
 -- ──────────────── teacher-content ────────────────
 create table if not exists public.sources (
   id          uuid primary key default gen_random_uuid(),
@@ -68,7 +61,6 @@ create index if not exists questions_bank_idx on public.questions (bank_id, posi
 -- ──────────────── RLS ────────────────
 alter table public.profiles      enable row level security;
 alter table public.progress      enable row level security;
-alter table public.vak_order     enable row level security;
 alter table public.sources       enable row level security;
 alter table public.question_banks enable row level security;
 alter table public.questions     enable row level security;
@@ -83,10 +75,6 @@ drop policy if exists "progress owner" on public.progress;
 create policy "progress owner" on public.progress
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
--- Vak order: idem.
-drop policy if exists "vak_order owner" on public.vak_order;
-create policy "vak_order owner" on public.vak_order
-  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
 -- Sources / banks: eigen leerkracht
 drop policy if exists "sources owner" on public.sources;

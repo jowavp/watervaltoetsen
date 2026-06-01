@@ -1,6 +1,10 @@
 // Persistentie voor kid/teacher state.
 // - Schrijft altijd naar localStorage (offline-first).
-// - Synct naar Supabase als die geconfigureerd is en de gebruiker aangemeld is.
+// - Synct kid-profiel + voortgang naar Supabase wanneer beschikbaar.
+//
+// De vakken-volgorde komt nu uit de `vakken`-tabel (sort_order, door de
+// leerkracht beheerd). We cachen die nog wel naar localStorage voor offline
+// gebruik, maar pushen niet meer naar een eigen `vak_order`-tabel.
 
 import { supabase, supabaseEnabled, ensureUser } from './supabase.js';
 
@@ -8,9 +12,7 @@ const KEYS = {
   profile: 'wv_profile',
   progress: 'wv_progress',
   vakorder: 'wv_vakorder',
-  teacher: 'wv_teacher',
-  sources: 'wv_sources',
-  banks: 'wv_banks'
+  teacher: 'wv_teacher'
 };
 
 const readLocal = (k, fallback) => {
@@ -47,9 +49,10 @@ export function saveKidProgress(progress) {
   writeLocal(KEYS.progress, progress);
   syncKidProgress(progress);
 }
+// Pure localStorage-cache van de door de leerkracht ingestelde volgorde —
+// gebruikt voor offline rendering. Wordt opnieuw vers gehaald wanneer online.
 export function saveKidVakOrder(order) {
   writeLocal(KEYS.vakorder, order);
-  syncKidVakOrder(order);
 }
 
 async function syncKidProfile(profile) {
@@ -83,24 +86,13 @@ async function syncKidProgress(progress) {
   await supabase.from('progress').upsert(rows, { onConflict: 'user_id,node_id' });
 }
 
-async function syncKidVakOrder(order) {
-  if (!supabaseEnabled) return;
-  const uid = await ensureUser();
-  if (!uid) return;
-  await supabase.from('vak_order').upsert(
-    { user_id: uid, ordering: order, updated_at: new Date().toISOString() },
-    { onConflict: 'user_id' }
-  );
-}
-
 export async function pullKidState() {
   if (!supabaseEnabled) return null;
   const uid = await ensureUser();
   if (!uid) return null;
-  const [{ data: prof }, { data: progRows }, { data: orderRow }] = await Promise.all([
+  const [{ data: prof }, { data: progRows }] = await Promise.all([
     supabase.from('profiles').select('naam,avatar,bg').eq('user_id', uid).maybeSingle(),
-    supabase.from('progress').select('node_id,stars').eq('user_id', uid),
-    supabase.from('vak_order').select('ordering').eq('user_id', uid).maybeSingle()
+    supabase.from('progress').select('node_id,stars').eq('user_id', uid)
   ]);
   const progress = {};
   (progRows || []).forEach((r) => {
@@ -108,30 +100,19 @@ export async function pullKidState() {
   });
   return {
     profile: prof || null,
-    progress,
-    vakorder: orderRow?.ordering || null
+    progress
   };
 }
 
 // ──────────────── ADMIN ────────────────
 
 export function loadTeacherLocal() {
-  return {
-    teacher: readLocal(KEYS.teacher, {}),
-    sources: readLocal(KEYS.sources, { onthoudmap: [], contracten: [], werkbladen: [] }),
-    banks: readLocal(KEYS.banks, [])
-  };
+  return { teacher: readLocal(KEYS.teacher, {}) };
 }
 
 export function saveTeacherProfile(teacher) {
   writeLocal(KEYS.teacher, teacher);
   syncTeacherProfile(teacher);
-}
-export function saveSources(sources) {
-  writeLocal(KEYS.sources, sources);
-}
-export function saveBanks(banks) {
-  writeLocal(KEYS.banks, banks);
 }
 
 async function syncTeacherProfile(teacher) {
