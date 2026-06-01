@@ -210,6 +210,34 @@ function RolePicker({ user, onPick, onSignOut }) {
 }
 
 function Loading() {
+  const [showReset, setShowReset] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setShowReset(true), 4000);
+    return () => clearTimeout(t);
+  }, []);
+
+  const hardReset = async () => {
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch {}
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+      if (typeof caches !== 'undefined') {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch (e) {
+      console.warn('[reset] cleanup failed:', e);
+    }
+    // Forceer een netwerk-bypass reload
+    window.location.replace(window.location.pathname + '?nocache=' + Date.now());
+  };
+
   return (
     <div
       className="screen"
@@ -220,6 +248,24 @@ function Loading() {
       }}
     >
       <Druppie size={88} mood="happy" />
+      {showReset && (
+        <button
+          onClick={hardReset}
+          style={{
+            marginTop: 28,
+            background: 'rgba(40,52,59,0.06)',
+            border: 'none',
+            borderRadius: 999,
+            padding: '8px 14px',
+            color: 'var(--ink-soft)',
+            fontSize: 12,
+            fontWeight: 800,
+            cursor: 'pointer'
+          }}
+        >
+          ↻ Vastgelopen? Klik om opnieuw te starten
+        </button>
+      )}
     </div>
   );
 }
