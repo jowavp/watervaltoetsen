@@ -54,12 +54,35 @@ export async function uploadSourceFile({ file, leerjaar, stream }) {
   const uid = await ensureUser();
   if (!uid) throw new Error('Niet aangemeld.');
   const path = `${uid}/${leerjaar}/${stream}/${randomId()}-${safeName(file.name)}`;
-  const { error } = await supabase.storage.from(BUCKET).upload(path, file, {
-    contentType: file.type || 'application/octet-stream',
-    cacheControl: '3600',
-    upsert: false
-  });
-  if (error) throw new Error(`Upload mislukt: ${error.message}`);
+  let result;
+  try {
+    result = await supabase.storage.from(BUCKET).upload(path, file, {
+      contentType: file.type || 'application/octet-stream',
+      cacheControl: '3600',
+      upsert: false
+    });
+  } catch (networkErr) {
+    // Echte fetch-rejection (CORS, netwerk, bucket onbereikbaar).
+    console.error('[upload] network error:', networkErr);
+    throw new Error(
+      `Upload mislukt — kon Supabase Storage niet bereiken (${networkErr.message}). ` +
+        `Controleer dat de "${BUCKET}" bucket bestaat (migration 004) en dat je CORS toelaat voor deze origin.`
+    );
+  }
+  const { error } = result;
+  if (error) {
+    console.error('[upload] supabase error:', error);
+    const status = error.statusCode ? ` [HTTP ${error.statusCode}]` : '';
+    if (error.message?.toLowerCase().includes('bucket') && error.message.includes('not found')) {
+      throw new Error(
+        `Bucket "${BUCKET}" bestaat niet. Run migration 004 (supabase/migrations/004_storage.sql) in de SQL Editor.`
+      );
+    }
+    if (error.message?.toLowerCase().includes('mime')) {
+      throw new Error(`Bestandstype niet toegestaan${status}: ${file.type || 'onbekend'}. Enkel PDF en afbeeldingen.`);
+    }
+    throw new Error(`Upload mislukt${status}: ${error.message}`);
+  }
   return { path, file_name: file.name, size: file.size, mime: file.type };
 }
 
