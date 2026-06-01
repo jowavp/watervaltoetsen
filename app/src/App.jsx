@@ -242,6 +242,14 @@ function Shell() {
         setRole(null);
         return;
       }
+      // Anonieme sessies van vóór de auth-redesign worden geforceerd uitgelogd
+      // zodat de gebruiker via Google opnieuw inlogt. Anders zien we een user
+      // zonder email en blijven we op rare states hangen.
+      if (user.is_anonymous) {
+        console.log('[shell] stale anonymous session — signing out');
+        await signOut();
+        return; // SIGNED_OUT-event volgt en zet alles netjes terug
+      }
       setAuthUser(user);
       try {
         const t = await isTeacherEmail(user.email);
@@ -250,8 +258,6 @@ function Shell() {
         if (!t) setRole('kid');
       } catch (e) {
         console.warn('[shell] teacher check failed:', e);
-        // Bij twijfel: behandel als leerling. Zo blokkeert een gefaalde
-        // teacher_emails-check de app niet.
         setIsTeacher(false);
         setRole('kid');
       }
