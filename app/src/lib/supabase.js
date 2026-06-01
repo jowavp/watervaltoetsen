@@ -16,32 +16,19 @@ export const supabase = supabaseEnabled
     })
   : null;
 
-let cachedUserId = null;
-
 export function appBaseUrl() {
   // BASE_URL is '/' lokaal, '/watervaltoetsen/' op Pages.
   return window.location.origin + import.meta.env.BASE_URL;
 }
 
-// Anoniem aanmelden (voor leerlingen). Roep niet aan voor leerkrachten.
-export async function ensureAnonymousUser() {
+// Returnt de huidige user-id of null als niet ingelogd.
+// Sinds de auth-redesign maakt deze functie geen sessies meer aan — de
+// sign-in flow is verantwoordelijk daarvoor.
+export async function ensureUser() {
   if (!supabase) return null;
   const { data } = await supabase.auth.getSession();
-  if (data?.session?.user) {
-    cachedUserId = data.session.user.id;
-    return cachedUserId;
-  }
-  const { data: anonData, error } = await supabase.auth.signInAnonymously();
-  if (error) {
-    console.warn('[supabase] anonymous sign-in failed:', error.message);
-    return null;
-  }
-  cachedUserId = anonData.user?.id ?? null;
-  return cachedUserId;
+  return data?.session?.user?.id ?? null;
 }
-
-// Alias voor backwards compat in storage.js — gedraagt zich identiek.
-export const ensureUser = ensureAnonymousUser;
 
 export async function currentUser() {
   if (!supabase) return null;
@@ -49,26 +36,28 @@ export async function currentUser() {
   return data?.user || null;
 }
 
-export function isAnonymous(user) {
-  if (!user) return true;
-  // Supabase zet `is_anonymous: true` op de gebruiker én op de JWT.
-  if (typeof user.is_anonymous === 'boolean') return user.is_anonymous;
-  return false;
+// Check de teacher_emails allowlist. Case-insensitive.
+export async function isTeacherEmail(email) {
+  if (!supabase || !email) return false;
+  const { data, error } = await supabase
+    .from('teacher_emails')
+    .select('email')
+    .ilike('email', email)
+    .maybeSingle();
+  if (error) {
+    console.warn('[teacher_emails] check:', error.message);
+    return false;
+  }
+  return Boolean(data);
 }
 
 export async function signInWithGoogle() {
   if (!supabase) throw new Error('Supabase niet geconfigureerd.');
-  // Als er nog een anonieme sessie hangt, eerst uitloggen — anders linkt
-  // Supabase de identiteit aan die anon-user en niet aan een nieuw account.
-  const { data: sess } = await supabase.auth.getSession();
-  if (sess?.session?.user?.is_anonymous) {
-    await supabase.auth.signOut();
-  }
   const { error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
       redirectTo: appBaseUrl(),
-      queryParams: { access_type: 'offline', prompt: 'consent' }
+      queryParams: { access_type: 'offline', prompt: 'select_account' }
     }
   });
   if (error) throw new Error(error.message);
@@ -76,14 +65,14 @@ export async function signInWithGoogle() {
 
 export async function signOut() {
   if (!supabase) return;
-  cachedUserId = null;
+  // Lokale cache opruimen zodat een volgende gebruiker op hetzelfde toestel
+  // geen restjes van de vorige sessie ziet.
+  try {
+    for (const k of ['wv_profile', 'wv_progress', 'wv_vakorder', 'wv_teacher']) {
+      localStorage.removeItem(k);
+    }
+  } catch {
+    /* private mode, quota — negeren */
+  }
   await supabase.auth.signOut();
-}
-
-// Reset de gecachte user-id wanneer de sessie wijzigt — anders wijst
-// `ensureUser` na een sign-out nog naar de oude id.
-if (supabase) {
-  supabase.auth.onAuthStateChange((_event, session) => {
-    cachedUserId = session?.user?.id ?? null;
-  });
 }

@@ -8,47 +8,49 @@ import {
   saveKidVakOrder
 } from '../../lib/storage.js';
 import { listVakken } from '../../lib/vakken.js';
-import { supabaseEnabled } from '../../lib/supabase.js';
+import { loadQuizForVak } from '../../lib/quiz.js';
+import { signOut, supabaseEnabled } from '../../lib/supabase.js';
 import ProfileScreen from './ProfileScreen.jsx';
 import WaterfallMap from './WaterfallMap.jsx';
 import QuizEngine from './QuizEngine.jsx';
 import ResultScreen from './ResultScreen.jsx';
 import TheoryScreen from './TheoryScreen.jsx';
 
-const LEERJAAR = 5;
+const DEFAULT_LEERJAAR = 5;
 
-export default function KidApp({ onExit }) {
+export default function KidApp({ authUser, onExit }) {
   const initial = loadKidLocal();
   const [profile, setProfile] = useState(initial.profile || {});
-  const [progress, setProgress] = useState(() => {
-    if (initial.progress && Object.keys(initial.progress).length) return initial.progress;
-    const init = {};
-    D.nodes.forEach((n) => {
-      if (n.status === 'done') init[n.id] = n.stars;
-    });
-    return init;
-  });
-  // vakOrder = teacher-set volgorde. Kind kan deze niet meer wijzigen.
-  // Eerst uit localStorage (laatst gecachte teacher-volgorde), anders hardcoded.
+  const [progress, setProgress] = useState(initial.progress || {});
   const [vakOrder, setVakOrder] = useState(initial.vakorder || Object.keys(D.vakken));
-  // vakkenMeta: per-key metadata (naam/kleur/tint/icon) — Supabase override
-  // van de hardcoded D.vakken wanneer beschikbaar.
   const [vakkenMeta, setVakkenMeta] = useState(D.vakken);
-  const [screen, setScreen] = useState(profile && profile.naam ? 'home' : 'profiel');
-  const [active, setActive] = useState(null);
+  const [screen, setScreen] = useState('loading');
+  const [active, setActive] = useState(null); // current vak-node
+  const [quizQuestions, setQuizQuestions] = useState([]);
+  const [quizSource, setQuizSource] = useState('none');
   const [result, setResult] = useState(null);
+  const [toast, setToast] = useState('');
 
-  // Hydrate profiel + voortgang vanuit Supabase als beschikbaar.
+  const leerjaar = profile.leerjaar || DEFAULT_LEERJAAR;
+  const googleNaam = authUser?.user_metadata?.full_name || '';
+
+  // Hydrate profiel + voortgang vanuit Supabase.
   useEffect(() => {
     let cancelled = false;
+    if (!supabaseEnabled) {
+      setScreen(initial.profile?.naam ? 'home' : 'profiel');
+      return;
+    }
     pullKidState().then((remote) => {
-      if (!remote || cancelled) return;
-      if (remote.profile && remote.profile.naam) {
+      if (cancelled) return;
+      if (remote?.profile && remote.profile.naam) {
         setProfile((p) => ({ ...p, ...remote.profile }));
-        if (!profile.naam) setScreen('home');
-      }
-      if (remote.progress && Object.keys(remote.progress).length) {
-        setProgress((p) => ({ ...p, ...remote.progress }));
+        if (remote.progress && Object.keys(remote.progress).length) {
+          setProgress((p) => ({ ...p, ...remote.progress }));
+        }
+        setScreen('home');
+      } else {
+        setScreen('profiel');
       }
     });
     return () => {
@@ -57,16 +59,16 @@ export default function KidApp({ onExit }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Vakken-volgorde + metadata van leerkracht ophalen.
+  // Vakken-metadata + volgorde laden zodra het leerjaar bekend is.
   useEffect(() => {
     let cancelled = false;
     if (!supabaseEnabled) return;
-    listVakken(LEERJAAR).then((vk) => {
+    if (!profile.leerjaar) return;
+    listVakken(profile.leerjaar).then((vk) => {
       if (cancelled || !vk?.length) return;
-      const active = vk.filter((v) => v.active);
-      // Bouw metadata-map met server-waarden als override.
+      const activeVakken = vk.filter((v) => v.active);
       const meta = { ...D.vakken };
-      for (const v of active) {
+      for (const v of activeVakken) {
         meta[v.key] = {
           ...(meta[v.key] || {}),
           naam: v.naam,
@@ -74,11 +76,12 @@ export default function KidApp({ onExit }) {
           tint: v.tint,
           icon: v.icon,
           test_date: v.test_date,
+          quiz_size: v.quiz_size ?? 10,
           teacher: meta[v.key]?.teacher || 'ann'
         };
       }
       setVakkenMeta(meta);
-      const order = active.map((v) => v.key);
+      const order = activeVakken.map((v) => v.key);
       if (order.length) {
         setVakOrder(order);
         saveKidVakOrder(order);
@@ -87,37 +90,39 @@ export default function KidApp({ onExit }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [profile.leerjaar]);
 
+  // Voortgang persisteren bij elke wijziging.
   useEffect(() => {
     saveKidProgress(progress);
   }, [progress]);
 
-  const isDone = (id) => Object.prototype.hasOwnProperty.call(progress, id);
-
+  // Eén bubbel per vak — de "stroom" van leerjaar.
+  // Status: 'done' (al gespeeld), 'now' (eerstvolgende onaangetaste), 'todo' (rest).
   const streamNodes = useMemo(() => {
-    // Filter nodes op vakken die nog bestaan in de teacher-config.
-    const allowed = new Set(vakOrder);
-    const filtered = D.nodes.filter((n) => allowed.has(n.vak));
-    const ordered = [...filtered].sort((a, b) => {
-      const oa = vakOrder.indexOf(a.vak),
-        ob = vakOrder.indexOf(b.vak);
-      if (oa !== ob) return oa - ob;
-      return D.nodes.indexOf(a) - D.nodes.indexOf(b);
-    });
     let foundNow = false;
-    return ordered.map((n) => {
-      const stars = progress[n.id] || 0;
-      let status;
-      if (isDone(n.id)) status = 'done';
-      else if (!foundNow) {
-        status = 'now';
-        foundNow = true;
-      } else status = 'todo'; // niet meer 'lock' — alle nodes blijven tapbaar
-      return { ...n, stars, status };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vakOrder, progress]);
+    return vakOrder
+      .map((vakKey) => {
+        const vi = vakkenMeta[vakKey];
+        if (!vi) return null;
+        const stars = progress[vakKey] || 0;
+        const played = stars > 0 || progress[vakKey] === 0;
+        let status;
+        if (played) status = 'done';
+        else if (!foundNow) {
+          status = 'now';
+          foundNow = true;
+        } else status = 'todo';
+        return {
+          id: `vak-${vakKey}`,
+          vak: vakKey,
+          titel: vi.naam,
+          stars,
+          status
+        };
+      })
+      .filter(Boolean);
+  }, [vakOrder, vakkenMeta, progress]);
 
   const totalStars = Object.values(progress).reduce((s, v) => s + (v || 0), 0);
   const badges = Object.values(progress).filter((v) => v === 3).length;
@@ -129,9 +134,32 @@ export default function KidApp({ onExit }) {
     setScreen('home');
   };
 
-  const openNode = (n) => {
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 2200);
+  };
+
+  const openNode = async (n) => {
     setActive(n);
-    setScreen('quiz');
+    setScreen('loading_quiz');
+    const size = vakkenMeta[n.vak]?.quiz_size || 10;
+    try {
+      const { vragen, source } = await loadQuizForVak({ leerjaar, vak: n.vak, size });
+      if (!vragen || vragen.length === 0) {
+        showToast('Nog geen vragen voor dit vak.');
+        setActive(null);
+        setScreen('home');
+        return;
+      }
+      setQuizQuestions(vragen);
+      setQuizSource(source);
+      setScreen('quiz');
+    } catch (e) {
+      showToast('Kon kwis niet laden.');
+      console.warn('[quiz] load error:', e);
+      setActive(null);
+      setScreen('home');
+    }
   };
 
   const finishQuiz = (res) => {
@@ -143,12 +171,8 @@ export default function KidApp({ onExit }) {
         : res.total - res.wrongIdx.length > 0
         ? 1
         : 0;
-    setProgress((prev) => {
-      const np = { ...prev };
-      const cur = np[active.id];
-      np[active.id] = cur == null ? sterren : Math.max(cur, sterren);
-      return np;
-    });
+    // LAATSTE ronde wint — niet best-ever.
+    setProgress((prev) => ({ ...prev, [active.vak]: sterren }));
     setResult({ ...res });
   };
 
@@ -158,38 +182,57 @@ export default function KidApp({ onExit }) {
     return D.teachers[vi?.teacher] || D.teachers.ann;
   };
 
+  const handleSignOut = async () => {
+    await signOut();
+  };
+
+  if (screen === 'loading') {
+    return (
+      <div className="screen" style={{ background: 'var(--cream)', alignItems: 'center', justifyContent: 'center' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-soft)' }}>Bezig met laden…</span>
+      </div>
+    );
+  }
+
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       {screen === 'profiel' && (
         <ProfileScreen
           profile={profile}
           firstRun={!profile.naam}
+          suggestedNaam={googleNaam}
           totalStars={totalStars}
           badges={badges}
           onSave={saveProfile}
           onClose={() => setScreen('home')}
+          onSignOut={handleSignOut}
         />
       )}
       {screen === 'home' && (
         <WaterfallMap
           profile={profile}
-          leerjaar={LEERJAAR}
+          leerjaar={leerjaar}
           nodes={streamNodes}
           totalStars={totalStars}
           vakken={vakkenMeta}
           onOpenNode={openNode}
-          onLeerjaar={() => {}}
           onProfiel={() => setScreen('profiel')}
         />
       )}
+      {screen === 'loading_quiz' && (
+        <div className="screen" style={{ background: 'var(--cream)', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-soft)' }}>Vragen laden…</span>
+        </div>
+      )}
       {screen === 'quiz' && active && !result && (
         <QuizEngine
-          vragen={D.vragenVoor(active.id)}
+          vragen={quizQuestions}
           vak={active.vak}
           vakInfo={vakInfoOf(active)}
           onDone={finishQuiz}
           onClose={() => {
             setActive(null);
+            setQuizQuestions([]);
             setScreen('home');
           }}
         />
@@ -198,10 +241,15 @@ export default function KidApp({ onExit }) {
         <ResultScreen
           result={result}
           onReview={() => setScreen('theorie')}
-          onRetry={() => setResult(null)}
+          onRetry={async () => {
+            setResult(null);
+            // Nieuwe random batch trekken voor "opnieuw spelen".
+            if (active) await openNode(active);
+          }}
           onHome={() => {
             setResult(null);
             setActive(null);
+            setQuizQuestions([]);
             setScreen('home');
           }}
         />
@@ -210,9 +258,11 @@ export default function KidApp({ onExit }) {
         <TheoryScreen result={result} teacher={teacherOf(active)} onBack={() => setScreen('quiz')} />
       )}
 
+      {toast && <div className="toast">{toast}</div>}
+
       {onExit && screen === 'home' && (
         <button onClick={onExit} className="exit-pill">
-          ↩ rol
+          🎓 Naar leerkracht
         </button>
       )}
     </div>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import D from '../../lib/data.js';
 import { Druppie, Teacher } from '../../components/Characters.jsx';
-import { loadTeacherLocal, saveTeacherProfile } from '../../lib/storage.js';
+import { loadTeacherLocal, pullTeacherProfile, saveTeacherProfile } from '../../lib/storage.js';
 import { signOut, supabaseEnabled } from '../../lib/supabase.js';
 import { listSources } from '../../lib/sources.js';
 import { publishLocalBank } from '../../lib/questions.js';
@@ -212,7 +212,7 @@ function AdminHome({ teacher, sources, leerjaar, onLeerjaar, onStream, onVakken,
             boxShadow: '0 3px 0 rgba(40,52,59,0.08)'
           }}
         >
-          ↩ rol
+          ↩ Wissel rol
         </button>
       </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
@@ -629,12 +629,26 @@ export default function AdminApp({ onExit, authUser }) {
   const [leerjaar, setLeerjaar] = useState(5);
   const [publishError, setPublishError] = useState(null);
 
-  // Eenmalige sync: als we Google-data hebben en het profiel was leeg, schrijf
-  // de pre-filled waarden ook door naar Supabase + localStorage.
+  // Eerst proberen teacher-profiel uit Supabase te trekken (cross-device sync).
+  // Als die er is, gebruiken we die. Anders fallback op Google-prefill.
   useEffect(() => {
-    if (!initial.teacher?.naam && googleNaam) {
-      saveTeacherProfile(initialTeacher);
-    }
+    let cancelled = false;
+    (async () => {
+      const remote = await pullTeacherProfile();
+      if (cancelled) return;
+      if (remote && remote.naam) {
+        const nt = { ...initialTeacher, ...remote };
+        setTeacher(nt);
+        saveTeacherProfile(nt);
+        if (!initialTeacher.naam) setStep('home');
+      } else if (!initial.teacher?.naam && googleNaam) {
+        // Geen remote profiel, wel Google-naam: schrijf pre-fill door.
+        saveTeacherProfile(initialTeacher);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

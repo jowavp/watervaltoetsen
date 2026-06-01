@@ -64,8 +64,24 @@ export default function WaterfallMap({
           </button>
           <div style={{ lineHeight: 1.1 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-soft)' }}>Dag {profile.naam}!</div>
-            <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 17, color: 'var(--ink)' }}>
-              Jouw waterval
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 17, color: 'var(--ink)' }}>
+                Jouw waterval
+              </div>
+              <span
+                style={{
+                  background: 'var(--water)',
+                  color: '#fff',
+                  borderRadius: 999,
+                  padding: '2px 9px',
+                  fontFamily: 'var(--display)',
+                  fontWeight: 700,
+                  fontSize: 12.5,
+                  boxShadow: '0 2px 0 var(--water-dark)'
+                }}
+              >
+                Leerjaar {leerjaar}
+              </span>
             </div>
           </div>
           <div
@@ -85,36 +101,6 @@ export default function WaterfallMap({
           >
             ⭐ {totalStars}
           </div>
-        </div>
-        <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-          {[1, 2, 3, 4, 5, 6].map((n) => {
-            const open = n === 5;
-            const active = n === leerjaar;
-            return (
-              <button
-                key={n}
-                className="tap"
-                disabled={!open}
-                onClick={() => open && onLeerjaar(n)}
-                style={{
-                  flex: 1,
-                  height: 38,
-                  borderRadius: 12,
-                  fontFamily: 'var(--display)',
-                  fontWeight: 600,
-                  fontSize: 16,
-                  cursor: open ? 'pointer' : 'default',
-                  background: active ? 'var(--water)' : '#fff',
-                  color: active ? '#fff' : open ? 'var(--ink)' : '#c3bcae',
-                  border: 'none',
-                  boxShadow: active ? '0 4px 0 var(--water-dark)' : '0 3px 0 rgba(40,52,59,0.07)',
-                  position: 'relative'
-                }}
-              >
-                {open ? n : '🔒'}
-              </button>
-            );
-          })}
         </div>
         <div
           style={{
@@ -186,7 +172,11 @@ export default function WaterfallMap({
                     justifyContent: 'center'
                   }}
                 >
-                  <VakIcon vak={vk} size={15} c={vi.kleur} stroke={2.4} />
+                  {['wiskunde', 'nederlands', 'frans'].includes(vk) ? (
+                    <VakIcon vak={vk} size={15} c={vi.kleur} stroke={2.4} />
+                  ) : (
+                    <span style={{ fontSize: 13 }}>{vi.icon || '📚'}</span>
+                  )}
                 </span>
                 <span style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 13, color: vi.kleur }}>
                   {vi.naam}
@@ -233,7 +223,11 @@ export default function WaterfallMap({
                     justifyContent: 'center'
                   }}
                 >
-                  <VakIcon vak={n.vak} size={28} c="#fff" stroke={2.4} />
+                  {(() => {
+                    const builtin = ['wiskunde', 'nederlands', 'frans'].includes(n.vak);
+                    if (builtin) return <VakIcon vak={n.vak} size={28} c="#fff" stroke={2.4} />;
+                    return <span style={{ fontSize: 26 }}>{vi.icon || '📚'}</span>;
+                  })()}
                   {done && (
                     <span style={{ position: 'absolute', bottom: -10, left: '50%', transform: 'translateX(-50%)' }}>
                       <Stars value={n.stars} size={13} gap={1} />

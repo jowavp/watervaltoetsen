@@ -31,7 +31,7 @@ export async function listVakken(leerjaar) {
   await ensureUser();
   const { data, error } = await supabase
     .from('vakken')
-    .select('id,leerjaar,key,naam,kleur,tint,icon,active,sort_order,test_date')
+    .select('id,leerjaar,key,naam,kleur,tint,icon,active,sort_order,test_date,quiz_size')
     .eq('leerjaar', leerjaar)
     .order('sort_order')
     .order('naam');
@@ -42,7 +42,7 @@ export async function listVakken(leerjaar) {
   return data || [];
 }
 
-export async function createVak({ leerjaar, naam, kleur, tint, icon, sort_order, test_date }) {
+export async function createVak({ leerjaar, naam, kleur, tint, icon, sort_order, test_date, quiz_size }) {
   if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
   const uid = await ensureUser();
   const key = slugify(naam);
@@ -58,6 +58,7 @@ export async function createVak({ leerjaar, naam, kleur, tint, icon, sort_order,
       icon: icon || null,
       sort_order: sort_order ?? 0,
       test_date: test_date || null,
+      quiz_size: quiz_size ?? 10,
       created_by: uid
     })
     .select()
@@ -69,7 +70,7 @@ export async function createVak({ leerjaar, naam, kleur, tint, icon, sort_order,
 export async function updateVak(id, patch) {
   if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
   await ensureUser();
-  const allowed = ['naam', 'kleur', 'tint', 'icon', 'active', 'sort_order', 'test_date'];
+  const allowed = ['naam', 'kleur', 'tint', 'icon', 'active', 'sort_order', 'test_date', 'quiz_size'];
   const body = {};
   for (const k of allowed) if (k in patch) body[k] = patch[k];
   if (patch.naam) body.key = slugify(patch.naam);

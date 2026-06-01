@@ -63,7 +63,7 @@ function VakRow({ vak, onEdit, onToggle, onDelete, onMove, isFirst, isLast }) {
           {vak.naam}
         </div>
         <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)' }}>
-          {vak.active ? 'Actief' : 'Inactief'} · {vak.key}
+          {vak.active ? 'Actief' : 'Inactief'} · {vak.key} · {vak.quiz_size ?? 10} vragen/kwis
           {dateLabel && (
             <>
               {' · '}
@@ -135,13 +135,14 @@ function VakFormDialog({ initial, onSave, onCancel }) {
   const [naam, setNaam] = useState(initial?.naam || '');
   const [icon, setIcon] = useState(initial?.icon || '📚');
   const [testDate, setTestDate] = useState(initial?.test_date || '');
+  const [quizSize, setQuizSize] = useState(initial?.quiz_size ?? 10);
   const [kleurIdx, setKleurIdx] = useState(() => {
     if (!initial) return 0;
     const i = VAK_KLEUREN.findIndex((c) => c.kleur === initial.kleur);
     return i < 0 ? 0 : i;
   });
   const kleur = VAK_KLEUREN[kleurIdx];
-  const valid = naam.trim().length >= 2;
+  const valid = naam.trim().length >= 2 && quizSize >= 1 && quizSize <= 50;
 
   return (
     <div
@@ -244,6 +245,17 @@ function VakFormDialog({ initial, onSave, onCancel }) {
           style={{ marginBottom: 14 }}
         />
 
+        <label className="lbl">Aantal vragen per kwis</label>
+        <input
+          className="inp"
+          type="number"
+          min={1}
+          max={50}
+          value={quizSize}
+          onChange={(e) => setQuizSize(parseInt(e.target.value || '10', 10))}
+          style={{ marginBottom: 14 }}
+        />
+
         <div
           style={{
             display: 'flex',
@@ -293,7 +305,8 @@ function VakFormDialog({ initial, onSave, onCancel }) {
                 icon: icon.trim() || null,
                 kleur: kleur.kleur,
                 tint: kleur.tint,
-                test_date: testDate || null
+                test_date: testDate || null,
+                quiz_size: quizSize
               })
             }
             style={{
