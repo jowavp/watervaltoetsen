@@ -57,7 +57,12 @@ drop policy if exists "profiles owner" on public.profiles;
 create policy "profiles owner" on public.profiles
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
--- ──────────────── vakken.quiz_size ────────────────
+-- ──────────────── vakken.quiz_size + test_date (safety) ────────────────
+-- test_date kwam normaal uit migration 006 — voor het geval die overgeslagen
+-- werd nemen we hem hier defensief ook mee. Beide ADD COLUMN IF NOT EXISTS
+-- zijn no-ops als de kolom al bestaat.
+alter table public.vakken
+  add column if not exists test_date date;
 alter table public.vakken
   add column if not exists quiz_size int not null default 10
     check (quiz_size between 1 and 50);
