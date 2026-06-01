@@ -66,11 +66,72 @@ export async function setQuestionApproved(id, approved) {
   if (error) throw new Error(error.message);
 }
 
+// Welke vakken zitten in een bank? Gebruikt om te weten welke oude vragen
+// vervangen mogen worden bij replace-mode.
+export async function getBankVakken(bankId) {
+  if (!supabaseEnabled) return [];
+  await ensureUser();
+  const { data, error } = await supabase
+    .from('questions')
+    .select('vak')
+    .eq('bank_id', bankId);
+  if (error) {
+    console.warn('[questions] getBankVakken:', error.message);
+    return [];
+  }
+  return [...new Set((data || []).map((r) => r.vak).filter(Boolean))];
+}
+
+// Zet active=false + archived_at op alle oudere published-bank-vragen van
+// de huidige leerkracht voor het opgegeven leerjaar en de vakken — behalve
+// die in `exceptBankId`. Geeft aantal gearchiveerde vragen terug.
+async function archiveOlderQuestions({ leerjaar, vakken, exceptBankId }) {
+  if (!supabaseEnabled) return 0;
+  const uid = await ensureUser();
+  if (!uid) return 0;
+  if (!vakken?.length) return 0;
+  const { data: banks, error: bErr } = await supabase
+    .from('question_banks')
+    .select('id')
+    .eq('teacher_id', uid)
+    .eq('leerjaar', leerjaar)
+    .eq('status', 'published')
+    .neq('id', exceptBankId);
+  if (bErr) throw new Error(bErr.message);
+  if (!banks || banks.length === 0) return 0;
+  const bankIds = banks.map((b) => b.id);
+  const { data, error } = await supabase
+    .from('questions')
+    .update({ active: false, archived_at: new Date().toISOString() })
+    .in('bank_id', bankIds)
+    .in('vak', vakken)
+    .eq('active', true)
+    .select('id');
+  if (error) throw new Error(error.message);
+  return data?.length || 0;
+}
+
 // Zet de bank-status naar 'published' zodat goedgekeurde + actieve vragen
 // zichtbaar worden voor leerlingen.
-export async function publishBank(bankId) {
+//   mode='add'     → laat bestaande gepubliceerde vragen staan
+//   mode='replace' → archiveer eerst de oude vragen voor dezelfde vakken
+export async function publishBank(bankId, { mode = 'add' } = {}) {
   if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
   await ensureUser();
+  if (mode === 'replace') {
+    const { data: bank, error: bErr } = await supabase
+      .from('question_banks')
+      .select('leerjaar')
+      .eq('id', bankId)
+      .maybeSingle();
+    if (bErr) throw new Error(bErr.message);
+    if (bank?.leerjaar != null) {
+      const vakken = await getBankVakken(bankId);
+      if (vakken.length) {
+        await archiveOlderQuestions({ leerjaar: bank.leerjaar, vakken, exceptBankId: bankId });
+      }
+    }
+  }
   const { error } = await supabase
     .from('question_banks')
     .update({ status: 'published', published_at: new Date().toISOString() })
@@ -79,7 +140,7 @@ export async function publishBank(bankId) {
 }
 
 // Eén-knop-werkflow: alle vragen in een bank goedkeuren + de bank publiceren.
-export async function approveAndPublishBank(bankId) {
+export async function approveAndPublishBank(bankId, { mode = 'add' } = {}) {
   if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
   await ensureUser();
   const { error: aErr } = await supabase
@@ -87,7 +148,7 @@ export async function approveAndPublishBank(bankId) {
     .update({ approved: true })
     .eq('bank_id', bankId);
   if (aErr) throw new Error(aErr.message);
-  await publishBank(bankId);
+  await publishBank(bankId, { mode });
 }
 
 export async function updateQuestion(id, patch) {

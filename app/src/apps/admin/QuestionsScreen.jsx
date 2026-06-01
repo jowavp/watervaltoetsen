@@ -265,23 +265,58 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
 
   const totalPending = pendingBanks.reduce((s, b) => s + b.total, 0);
 
-  const approveAndPublishAll = async () => {
-    if (!pendingBanks.length) return;
-    if (!confirm(`Alle ${totalPending} vragen goedkeuren en ${pendingBanks.length} batch(es) publiceren?`)) return;
-    try {
-      for (const b of pendingBanks) {
-        await approveAndPublishBank(b.bankId);
-      }
-      reload();
-    } catch (e) {
-      setError(e.message);
+  // Bouw vak-overzicht per bank (voor de publish-dialog preview).
+  const banksWithVakken = useMemo(() => {
+    const byBank = new Map();
+    for (const q of questions) {
+      if (q.bank?.status !== 'pending_review') continue;
+      const entry = byBank.get(q.bank_id) || { bankId: q.bank_id, vakken: new Set(), total: 0 };
+      entry.vakken.add(q.vak);
+      entry.total += 1;
+      byBank.set(q.bank_id, entry);
     }
+    return [...byBank.values()].map((e) => ({ ...e, vakken: [...e.vakken] }));
+  }, [questions]);
+
+  // Dialog-state voor "Toevoegen of vervangen?"
+  // { kind: 'one' | 'bulk', bankIds: string[], vakken: string[], andApprove: bool }
+  const [publishDlg, setPublishDlg] = useState(null);
+
+  const openPublishDlgBulk = () => {
+    if (!pendingBanks.length) return;
+    const vakSet = new Set();
+    banksWithVakken.forEach((b) => b.vakken.forEach((v) => vakSet.add(v)));
+    setPublishDlg({
+      kind: 'bulk',
+      bankIds: pendingBanks.map((b) => b.bankId),
+      vakken: [...vakSet],
+      andApprove: true
+    });
   };
 
-  const publishOneBank = async (bankId) => {
-    if (!confirm('Deze batch publiceren? Enkel goedgekeurde vragen worden zichtbaar voor leerlingen.')) return;
+  const openPublishDlgOne = (bankId) => {
+    const meta = banksWithVakken.find((b) => b.bankId === bankId);
+    setPublishDlg({
+      kind: 'one',
+      bankIds: [bankId],
+      vakken: meta?.vakken || [],
+      // Voor de "📤 Publiceer batch"-knop weten we niet of alles is goedgekeurd —
+      // we publiceren gewoon (de bank's reeds-goedgekeurde vragen worden zichtbaar).
+      andApprove: false
+    });
+  };
+
+  const runPublish = async (mode) => {
+    if (!publishDlg) return;
+    setPublishDlg(null);
     try {
-      await publishBank(bankId);
+      for (const bid of publishDlg.bankIds) {
+        if (publishDlg.andApprove) {
+          await approveAndPublishBank(bid, { mode });
+        } else {
+          await publishBank(bid, { mode });
+        }
+      }
       reload();
     } catch (e) {
       setError(e.message);
@@ -397,7 +432,7 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
             </div>
             <button
               className="cta tap"
-              onClick={approveAndPublishAll}
+              onClick={openPublishDlgBulk}
               style={{
                 background: 'var(--leaf)',
                 boxShadow: '0 4px 0 var(--leaf-dark)',
@@ -431,7 +466,7 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
                   <span style={{ color: 'var(--leaf-dark)', fontWeight: 800 }}>· {b.approved} goedgekeurd</span>
                   <button
                     className="tap"
-                    onClick={() => publishOneBank(b.bankId)}
+                    onClick={() => openPublishDlgOne(b.bankId)}
                     disabled={b.approved === 0}
                     style={{
                       marginLeft: 'auto',
@@ -497,6 +532,128 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
             />
           ))
         )}
+      </div>
+
+      {publishDlg && (
+        <PublishDialog
+          dlg={publishDlg}
+          vakInfo={vakInfo}
+          onClose={() => setPublishDlg(null)}
+          onChoose={runPublish}
+        />
+      )}
+    </div>
+  );
+}
+
+function PublishDialog({ dlg, vakInfo, onClose, onChoose }) {
+  const vakNamen = dlg.vakken
+    .map((k) => vakInfo[k]?.naam || k)
+    .filter(Boolean);
+  const vakSummary =
+    vakNamen.length === 0
+      ? 'dit vak'
+      : vakNamen.length === 1
+      ? vakNamen[0]
+      : vakNamen.slice(0, -1).join(', ') + ' en ' + vakNamen.slice(-1);
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        zIndex: 50,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'flex-end'
+      }}
+    >
+      <div
+        onClick={onClose}
+        style={{ position: 'absolute', inset: 0, background: 'rgba(40,52,59,0.45)', animation: 'fadein .2s ease' }}
+      />
+      <div
+        style={{
+          position: 'relative',
+          background: 'var(--cream)',
+          borderRadius: '26px 26px 0 0',
+          padding: '14px 18px 20px',
+          boxShadow: '0 -10px 40px rgba(0,0,0,0.22)',
+          animation: 'slideup .3s cubic-bezier(.2,.8,.3,1)'
+        }}
+      >
+        <div style={{ width: 44, height: 5, borderRadius: 3, background: '#d9d0c0', margin: '0 auto 14px' }} />
+
+        <div style={{ fontFamily: 'var(--display)', fontWeight: 700, fontSize: 20, color: 'var(--ink)', marginBottom: 4 }}>
+          {dlg.kind === 'bulk' ? 'Alles publiceren' : 'Batch publiceren'}
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-soft)', marginBottom: 16, lineHeight: 1.35 }}>
+          Wat doen we met de vragen die nu al gepubliceerd staan voor <b style={{ color: 'var(--ink)' }}>{vakSummary}</b>?
+        </div>
+
+        <button
+          className="tap"
+          onClick={() => onChoose('add')}
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            background: '#fff',
+            border: 'none',
+            borderRadius: 16,
+            padding: '14px 14px',
+            cursor: 'pointer',
+            boxShadow: '0 4px 0 rgba(40,52,59,0.07)',
+            borderLeft: '6px solid var(--water)',
+            width: '100%',
+            textAlign: 'left',
+            marginBottom: 10
+          }}
+        >
+          <span style={{ fontSize: 22 }}>➕</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 16, color: 'var(--ink)' }}>
+              Toevoegen aan bestaande set
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-soft)', marginTop: 2, lineHeight: 1.3 }}>
+              Oude vragen blijven zichtbaar. De nieuwe komen erbij.
+            </div>
+          </div>
+        </button>
+
+        <button
+          className="tap"
+          onClick={() => onChoose('replace')}
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            background: '#fff',
+            border: 'none',
+            borderRadius: 16,
+            padding: '14px 14px',
+            cursor: 'pointer',
+            boxShadow: '0 4px 0 rgba(40,52,59,0.07)',
+            borderLeft: '6px solid var(--coral)',
+            width: '100%',
+            textAlign: 'left',
+            marginBottom: 14
+          }}
+        >
+          <span style={{ fontSize: 22 }}>♻️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: 'var(--display)', fontWeight: 600, fontSize: 16, color: 'var(--ink)' }}>
+              Vervangen — oude verbergen
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-soft)', marginTop: 2, lineHeight: 1.3 }}>
+              Bestaande vragen voor {vakSummary} worden uitgeschakeld (niet gewist) en alleen de nieuwe blijven zichtbaar voor leerlingen.
+            </div>
+          </div>
+        </button>
+
+        <button className="cta-ghost tap" onClick={onClose} style={{ width: '100%' }}>
+          Annuleer
+        </button>
       </div>
     </div>
   );
