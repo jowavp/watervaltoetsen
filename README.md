@@ -53,11 +53,19 @@ Trigger:
 
 **Vereiste secrets** (`Settings → Secrets and variables → Actions`):
 
-| Naam | Waar te vinden |
-|------|----------------|
-| `SUPABASE_URL` | Supabase Dashboard → Project Settings → API Keys |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Dashboard → Project Settings → API Keys → **service_role** (LET OP: nooit in de browser) |
-| `ANTHROPIC_API_KEY` | <https://console.anthropic.com> → API Keys |
+| Naam | Verplicht | Waar te vinden |
+|------|-----------|----------------|
+| `SUPABASE_URL` | altijd | Supabase Dashboard → Project Settings → API Keys |
+| `SUPABASE_SERVICE_ROLE_KEY` | altijd | Supabase Dashboard → Project Settings → API Keys → **service_role** (LET OP: nooit in de browser) |
+| `GEMINI_API_KEY` | bij Gemini (default) | <https://aistudio.google.com/apikey> — gratis tier volstaat ruim voor schoolgebruik |
+| `ANTHROPIC_API_KEY` | bij Anthropic | <https://console.anthropic.com> → API Keys |
+
+**LLM-provider kiezen** (optionele *repository variable*, niet secret — `Settings → Secrets and variables → Actions → Variables`):
+
+| Variabele | Default | Mogelijke waarden |
+|-----------|---------|-------------------|
+| `LLM_PROVIDER` | `gemini` | `gemini` of `anthropic` |
+| `LLM_MODEL` | provider-specifiek | bv. `gemini-2.5-pro`, `claude-sonnet-4-6` |
 
 > De service_role key omzeilt RLS — daarom enkel server-side gebruiken (CI of jouw eigen machine). Verschillend van de anon-key die in de PWA terechtkomt.
 

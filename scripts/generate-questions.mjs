@@ -2,37 +2,45 @@
 /*
  * Waterval — question generator
  *
- * Reads `generation_requests` waar status='queued', genereert vragen via Claude
- * op basis van de bronnen van die leerkracht voor dat leerjaar/vak, en schrijft
- * ze als nieuwe `question_banks` (status='pending_review') + `questions` rows
- * (active=true, approved=false).
- *
- * Gebruikt de Supabase **service_role** key — bypasst RLS. Houd deze ALLEEN
- * server-side (GitHub Actions secret, jouw lokale .env). Nooit naar de browser.
+ * Leest `generation_requests` waar status='queued', genereert vragen via een
+ * LLM (default Gemini) op basis van de bronnen van die leerkracht voor dat
+ * leerjaar/vak, en schrijft ze als nieuwe `question_banks` (status='pending_review')
+ * + `questions` rows (active=true, approved=false).
  *
  * ENV:
  *   SUPABASE_URL              — https://<project>.supabase.co
  *   SUPABASE_SERVICE_ROLE_KEY — sb_secret_... (NIET de anon-key!)
- *   ANTHROPIC_API_KEY         — sk-ant-...
- *   MODEL                     — optioneel, default 'claude-haiku-4-5-20251001'
- *   MAX_REQUESTS              — optioneel, default 10 (per run)
+ *   LLM_PROVIDER              — 'gemini' (default) of 'anthropic'
+ *   GEMINI_API_KEY            — verplicht als provider=gemini
+ *   ANTHROPIC_API_KEY         — verplicht als provider=anthropic
+ *   MODEL                     — optioneel; default per provider
+ *   MAX_REQUESTS              — optioneel, default 10 per run
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
-const MODEL = process.env.MODEL || 'claude-haiku-4-5-20251001';
+const PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
 const MAX_REQUESTS = parseInt(process.env.MAX_REQUESTS || '10', 10);
+
+const DEFAULT_MODEL = {
+  gemini: 'gemini-2.5-flash',
+  anthropic: 'claude-haiku-4-5-20251001'
+};
+const MODEL = process.env.MODEL || DEFAULT_MODEL[PROVIDER] || DEFAULT_MODEL.gemini;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('Missing SUPABASE_URL of SUPABASE_SERVICE_ROLE_KEY');
   process.exit(1);
 }
-if (!ANTHROPIC_KEY) {
-  console.error('Missing ANTHROPIC_API_KEY');
+
+if (PROVIDER === 'gemini' && !process.env.GEMINI_API_KEY) {
+  console.error('LLM_PROVIDER=gemini, maar GEMINI_API_KEY ontbreekt.');
+  process.exit(1);
+}
+if (PROVIDER === 'anthropic' && !process.env.ANTHROPIC_API_KEY) {
+  console.error('LLM_PROVIDER=anthropic, maar ANTHROPIC_API_KEY ontbreekt.');
   process.exit(1);
 }
 
@@ -40,7 +48,44 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false }
 });
 
-const anthropic = new Anthropic({ apiKey: ANTHROPIC_KEY });
+// ──────────────── Provider abstractie ────────────────
+
+async function callGemini(prompt) {
+  const { GoogleGenAI } = await import('@google/genai');
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const response = await ai.models.generateContent({
+    model: MODEL,
+    contents: prompt,
+    config: {
+      temperature: 0.7,
+      maxOutputTokens: 4096,
+      // Vraag Gemini om JSON-array terug te geven — verhoogt parse-succes.
+      responseMimeType: 'application/json'
+    }
+  });
+  return response.text || '';
+}
+
+async function callClaude(prompt) {
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const res = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: prompt }]
+  });
+  return res.content
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
+}
+
+async function callLLM(prompt) {
+  if (PROVIDER === 'anthropic') return callClaude(prompt);
+  return callGemini(prompt);
+}
+
+// ──────────────── Prompt + parsing ────────────────
 
 const TYPE_DESCRIPTIONS = {
   mc: '{"type":"mc","q":"vraag","options":["A","B","C","D"],"answer":<index 0-3>,"theory":{"titel":"...","text":"..."}}',
@@ -80,6 +125,16 @@ function extractJSON(raw) {
   if (!raw) return null;
   let s = String(raw).trim();
   s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  // Sommige modellen wrappen in een object { "questions": [...] }
+  if (s.startsWith('{')) {
+    try {
+      const obj = JSON.parse(s);
+      const arr = obj.questions || obj.items || obj.data;
+      if (Array.isArray(arr)) return arr;
+    } catch {
+      /* val terug op array-extractie */
+    }
+  }
   const i = s.indexOf('[');
   const j = s.lastIndexOf(']');
   if (i < 0 || j < i) return null;
@@ -121,9 +176,9 @@ function validateQuestion(x) {
   return out;
 }
 
+// ──────────────── Supabase helpers ────────────────
+
 async function fetchSources(teacherId, leerjaar, vak) {
-  // Alle bronnen voor de leerkracht in dat leerjaar; we filteren licht op vak
-  // (vakgebonden bronnen) en nemen vakoverschrijdende mee.
   const { data, error } = await supabase
     .from('sources')
     .select('title,stream,vak,file_name')
@@ -144,18 +199,9 @@ async function generate(req) {
     num: req.num_questions,
     sources
   });
-
-  const res = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 4096,
-    messages: [{ role: 'user', content: prompt }]
-  });
-  const text = res.content
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+  const text = await callLLM(prompt);
   const arr = extractJSON(text);
-  if (!arr) throw new Error('Model gaf geen geldige JSON terug.');
+  if (!arr) throw new Error(`Model gaf geen geldige JSON terug (provider=${PROVIDER}, model=${MODEL}).`);
   const valid = arr.map(validateQuestion).filter(Boolean);
   if (valid.length === 0) throw new Error('Geen geldige vragen na validatie.');
   return valid;
@@ -164,7 +210,6 @@ async function generate(req) {
 async function processRequest(req) {
   console.log(`▶ ${req.id} — ${req.vak} (leerjaar ${req.leerjaar}, n=${req.num_questions})`);
 
-  // Markeer als running
   await supabase
     .from('generation_requests')
     .update({ status: 'running', started_at: new Date().toISOString() })
@@ -173,7 +218,6 @@ async function processRequest(req) {
   try {
     const questions = await generate(req);
 
-    // Maak een bank in pending_review
     const { data: bank, error: bErr } = await supabase
       .from('question_banks')
       .insert({
@@ -185,7 +229,6 @@ async function processRequest(req) {
       .single();
     if (bErr) throw new Error(bErr.message);
 
-    // Insert vragen
     const rows = questions.map((q, i) => ({
       bank_id: bank.id,
       vak: req.vak,
@@ -224,6 +267,7 @@ async function processRequest(req) {
 }
 
 async function main() {
+  console.log(`Provider: ${PROVIDER}  Model: ${MODEL}`);
   const { data: queue, error } = await supabase
     .from('generation_requests')
     .select('id,teacher_id,leerjaar,vak,num_questions')
