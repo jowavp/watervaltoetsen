@@ -171,13 +171,13 @@ async function callLLM(prompt, files = []) {
 // ────────── prompt + parsing ──────────
 
 const TYPE_DESCRIPTIONS = {
-  mc: '{"type":"mc","q":"vraag","options":["A","B","C","D"],"answer":<index 0-3>,"theory":{"titel":"...","text":"..."}}',
-  tf: '{"type":"tf","q":"stelling","answer":<true|false>,"theory":{"titel":"...","text":"..."}}',
-  fill: '{"type":"fill","q":"vraag met ...","answer":"juist antwoord","accept":["alt1","alt2"],"theory":{"titel":"...","text":"..."}}',
-  match: '{"type":"match","q":"instructie","pairs":[{"l":"links","r":"rechts"}],"theory":{"titel":"...","text":"..."}}'
+  mc: '{"type":"mc","category":"...","q":"vraag","options":["A","B","C","D"],"answer":<index 0-3>,"theory":{"titel":"...","text":"..."}}',
+  tf: '{"type":"tf","category":"...","q":"stelling","answer":<true|false>,"theory":{"titel":"...","text":"..."}}',
+  fill: '{"type":"fill","category":"...","q":"vraag met ...","answer":"juist antwoord","accept":["alt1","alt2"],"theory":{"titel":"...","text":"..."}}',
+  match: '{"type":"match","category":"...","q":"instructie","pairs":[{"l":"links","r":"rechts"}],"theory":{"titel":"...","text":"..."}}'
 };
 
-function buildPrompt({ vak, leerjaar, num, sources, files, mode }) {
+function buildPrompt({ vak, leerjaar, num, sources, files, mode, existingCategories, targetCategory }) {
   const bronnenLijst = (sources || [])
     .slice(0, 30)
     .map((s) => `- ${s.title}${s.stream ? ` (${s.stream})` : ''}${s.vak ? ` [${s.vak}]` : ''}${s.file_name ? ` — ${s.file_name}` : ''}`)
@@ -192,7 +192,6 @@ function buildPrompt({ vak, leerjaar, num, sources, files, mode }) {
   } else if (mode === 'curriculum') {
     bronInstructie = `Gebruik de standaard Vlaamse leerlijn voor leerjaar ${leerjaar}, vak "${vak}". Negeer eventuele opgeladen documenten.`;
   } else {
-    // mix
     if (files.length > 0) {
       bronInstructie = `Gebruik de ${files.length} aangeleverde document(en) als hoofdbron. Vul aan waar nodig met de standaard Vlaamse leerlijn voor leerjaar ${leerjaar}.`;
     } else {
@@ -204,11 +203,27 @@ function buildPrompt({ vak, leerjaar, num, sources, files, mode }) {
     ? `\n\nGekoppelde bronnen (metadata):\n${bronnenLijst}`
     : '';
 
+  // Categorie-instructie
+  let categorieInstructie;
+  if (targetCategory) {
+    categorieInstructie = `\n\n**Categorie**: alle vragen MOETEN bij de categorie "${targetCategory}" horen. Zet exact die waarde in het "category"-veld van elke vraag.`;
+  } else {
+    const existingList = existingCategories?.length
+      ? existingCategories.map((c) => `"${c.naam}"`).join(', ')
+      : '(geen — kies zelf zinvolle categorieën)';
+    categorieInstructie = `\n\n**Categorie per vraag**: groepeer de vragen in thematische categorieën (max 3 woorden per naam). Voorbeelden: "Les couleurs", "Breuken vergelijken", "Werkwoorden tegenwoordige tijd".
+
+Bestaande categorieën voor dit vak/leerjaar — **gebruik die naam exact** als de vraag erbij past:
+${existingList}
+
+Maak alleen nieuwe categorieën aan wanneer geen enkele bestaande past. Mik op 3 tot 6 verschillende categorieën in totaal, evenwichtig verdeeld.`;
+  }
+
   return `Je bent een ervaren Vlaamse leerkracht lager onderwijs.
 
 Maak ${num} korte, kindvriendelijke kwisvragen voor leerlingen van leerjaar ${leerjaar} voor het vak "${vak}". Varieer de vraagtypes (mc, tf, fill, match) en zorg dat elke vraag een korte uitleg/theorie krijgt voor wie ze fout heeft.
 
-${bronInstructie}${bronLijstSectie}
+${bronInstructie}${bronLijstSectie}${categorieInstructie}
 
 Antwoord UITSLUITEND met geldige JSON: een array van objecten. Elk object volgt exact een van deze schema's:
 - ${TYPE_DESCRIPTIONS.mc}
@@ -217,6 +232,7 @@ Antwoord UITSLUITEND met geldige JSON: een array van objecten. Elk object volgt 
 - ${TYPE_DESCRIPTIONS.match}
 
 Belangrijk:
+- "category" bevat altijd een korte naam (max 3 woorden) waaronder de vraag valt.
 - "theory" bevat een kort lesje in begrijpelijke taal, max 3 zinnen.
 - Voor "match" gebruik 3 paren. De volgorde van "pairs" is de juiste koppeling — de app schudt rechts zelf.
 - Voor "fill" maak je antwoorden hoofdletterongevoelig herkenbaar via "accept".
@@ -252,6 +268,9 @@ function validateQuestion(x) {
   if (!['mc', 'tf', 'fill', 'match'].includes(x.type)) return null;
   if (typeof x.q !== 'string' || !x.q.trim()) return null;
   const out = { type: x.type, q: String(x.q).trim() };
+  if (typeof x.category === 'string' && x.category.trim()) {
+    out.category = x.category.trim().slice(0, 80);
+  }
   if (x.type === 'mc') {
     if (!Array.isArray(x.options) || x.options.length < 2) return null;
     if (typeof x.answer !== 'number' || x.answer < 0 || x.answer >= x.options.length) return null;
@@ -291,6 +310,61 @@ async function fetchSources(teacherId, leerjaar, vak) {
   }
   // Houd vakgebonden bronnen voor dit vak + de vakoverschrijdende (vak=null).
   return (data || []).filter((s) => !s.vak || s.vak === vak);
+}
+
+async function fetchCategoriesForVak(leerjaar, vak) {
+  const { data, error } = await supabase
+    .from('categories')
+    .select('id,naam,sort_order')
+    .eq('leerjaar', leerjaar)
+    .eq('vak', vak)
+    .eq('active', true);
+  if (error) {
+    console.warn('categories fetch:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
+// Resolveer categorie-namen → ids. Reuse bestaande (case-insensitive),
+// maak nieuwe aan indien nodig. Returnt Map<lowerName, id>.
+async function resolveCategories({ leerjaar, vak, names }) {
+  const existing = await fetchCategoriesForVak(leerjaar, vak);
+  const byNameLower = new Map(existing.map((c) => [c.naam.toLowerCase(), c]));
+  const result = new Map();
+  const toCreate = [];
+  const seen = new Set();
+  for (const raw of names) {
+    if (!raw) continue;
+    const name = raw.trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (byNameLower.has(key)) {
+      result.set(key, byNameLower.get(key).id);
+    } else {
+      toCreate.push(name);
+    }
+  }
+  if (toCreate.length) {
+    const maxOrder = existing.reduce((m, c) => Math.max(m, c.sort_order || 0), 0);
+    const rows = toCreate.map((naam, i) => ({
+      leerjaar,
+      vak,
+      naam,
+      sort_order: maxOrder + i + 1
+    }));
+    const { data, error } = await supabase.from('categories').insert(rows).select('id, naam');
+    if (error) {
+      console.warn('categories upsert:', error.message);
+    } else {
+      for (const row of data || []) {
+        result.set(row.naam.toLowerCase(), row.id);
+      }
+    }
+  }
+  return result;
 }
 
 async function downloadFiles(sources) {
@@ -350,13 +424,26 @@ async function generate(req) {
       console.log(`  📎 ${files.length} bestand(en) bijgevoegd (${totalMB} MB totaal)`);
     }
   }
+
+  // Bestaande categorieën ophalen — model gebruikt deze namen waar mogelijk.
+  const existingCategories = await fetchCategoriesForVak(req.leerjaar, req.vak);
+
+  // Optioneel: een specifieke categorie via req.category_id.
+  let targetCategoryNaam = null;
+  if (req.category_id) {
+    const match = existingCategories.find((c) => c.id === req.category_id);
+    if (match) targetCategoryNaam = match.naam;
+  }
+
   const prompt = buildPrompt({
     vak: req.vak,
     leerjaar: req.leerjaar,
     num: req.num_questions,
     sources,
     files,
-    mode
+    mode,
+    existingCategories,
+    targetCategory: targetCategoryNaam
   });
   const text = await callLLM(prompt, files);
   const arr = extractJSON(text);
@@ -389,11 +476,24 @@ async function processRequest(req) {
       .single();
     if (bErr) throw new Error(bErr.message);
 
+    // Categorieën resolveren: unieke namen uit de gegenereerde vragen.
+    const allCategoryNames = questions.map((q) => q.category).filter(Boolean);
+    const categoryMap = await resolveCategories({
+      leerjaar: req.leerjaar,
+      vak: req.vak,
+      names: allCategoryNames
+    });
+    const newCount = categoryMap.size;
+    if (newCount > 0) {
+      console.log(`  🏷️  ${newCount} unieke categorie(ën): ${[...categoryMap.keys()].join(', ')}`);
+    }
+
     const rows = questions.map((q, i) => ({
       bank_id: bank.id,
       vak: req.vak,
       type: q.type,
-      onderdeel: null,
+      onderdeel: q.category || null,
+      category_id: q.category ? categoryMap.get(q.category.toLowerCase()) ?? null : null,
       q: q.q,
       payload: q,
       approved: false,
@@ -426,7 +526,7 @@ async function main() {
   console.log(`Provider: ${PROVIDER}  Model: ${MODEL || '(default)'}`);
   const { data: queue, error } = await supabase
     .from('generation_requests')
-    .select('id,teacher_id,leerjaar,vak,num_questions,source_mode')
+    .select('id,teacher_id,leerjaar,vak,num_questions,source_mode,category_id')
     .eq('status', 'queued')
     .order('created_at', { ascending: true })
     .limit(MAX_REQUESTS);

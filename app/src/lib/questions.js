@@ -27,7 +27,7 @@ export async function listQuestions({ leerjaar, vak, includeInactive = false }) 
 
   let q = supabase
     .from('questions')
-    .select('id,bank_id,vak,type,onderdeel,q,payload,approved,active,archived_at,position')
+    .select('id,bank_id,vak,type,onderdeel,category_id,q,payload,approved,active,archived_at,position')
     .in('bank_id', bankIds)
     .order('position', { ascending: true });
   if (vak) q = q.eq('vak', vak);

@@ -8,6 +8,7 @@ import {
   setQuestionApproved
 } from '../../lib/questions.js';
 import { listVakken } from '../../lib/vakken.js';
+import { listCategories, setQuestionCategory } from '../../lib/categories.js';
 import { supabaseEnabled } from '../../lib/supabase.js';
 
 const TYPE_LABEL = { mc: 'Meerkeuze', tf: 'Juist/fout', fill: 'Invul', match: 'Koppel' };
@@ -31,9 +32,10 @@ function answerText(q) {
   return '—';
 }
 
-function QuestionCard({ q, vakInfo, onToggle, onDelete, onToggleApproved }) {
+function QuestionCard({ q, vakInfo, categoriesForVak, onToggle, onDelete, onToggleApproved, onChangeCategory }) {
   const isActive = q.active && !q.archived_at;
   const isPending = q.bank?.status === 'pending_review';
+  const currentCategory = categoriesForVak?.find((c) => c.id === q.category_id);
   return (
     <div
       style={{
@@ -134,9 +136,48 @@ function QuestionCard({ q, vakInfo, onToggle, onDelete, onToggleApproved }) {
         </button>
       </div>
       <div style={{ fontWeight: 700, fontSize: 14.5, color: 'var(--ink)', lineHeight: 1.3 }}>{q.q}</div>
-      {q.onderdeel && (
-        <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--ink-soft)', marginTop: 4 }}>· {q.onderdeel}</div>
-      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+        <span style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--ink-soft)' }}>Categorie:</span>
+        {onChangeCategory ? (
+          <select
+            value={q.category_id || ''}
+            onChange={(e) => onChangeCategory(q, e.target.value || null)}
+            style={{
+              fontSize: 11,
+              fontWeight: 800,
+              padding: '2px 6px',
+              borderRadius: 7,
+              border: '1.5px solid var(--border)',
+              background: '#fff',
+              color: vakInfo?.kleur || 'var(--ink)',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="">— Ongetagd —</option>
+            {(categoriesForVak || []).map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.naam}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span
+            style={{
+              fontSize: 10.5,
+              fontWeight: 800,
+              color: currentCategory ? vakInfo?.kleur || 'var(--ink-soft)' : 'var(--ink-soft)',
+              background: currentCategory ? (vakInfo?.tint || '#eef1f3') : '#f4efe2',
+              borderRadius: 999,
+              padding: '2px 8px'
+            }}
+          >
+            {currentCategory ? currentCategory.naam : 'Ongetagd'}
+          </span>
+        )}
+        {q.onderdeel && q.onderdeel !== (currentCategory?.naam || '') && (
+          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--ink-soft)' }}>· {q.onderdeel}</span>
+        )}
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 7 }}>
         <span
           style={{
@@ -164,13 +205,16 @@ function QuestionCard({ q, vakInfo, onToggle, onDelete, onToggleApproved }) {
 
 export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
   const [vakken, setVakken] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [vakFilter, setVakFilter] = useState(null);
+  const [categoryFilter, setCategoryFilter] = useState(null); // null=all, 'NULL'=ongetagd, id=specifiek
   const [showInactive, setShowInactive] = useState(false);
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const vakInfo = useMemo(() => Object.fromEntries(vakken.map((v) => [v.key, v])), [vakken]);
+  const categoryById = useMemo(() => Object.fromEntries(categories.map((c) => [c.id, c])), [categories]);
 
   const reload = async () => {
     setLoading(true);
@@ -181,6 +225,15 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
         listQuestions({ leerjaar, vak: vakFilter, includeInactive: showInactive })
       ]);
       setVakken(vk);
+      // Categorieën: enkel voor het actieve vak-filter, of alle vakken samen.
+      let cats = [];
+      if (vakFilter) {
+        cats = await listCategories({ leerjaar, vak: vakFilter });
+      } else {
+        const lists = await Promise.all(vk.map((v) => listCategories({ leerjaar, vak: v.key })));
+        cats = lists.flat();
+      }
+      setCategories(cats);
       setQuestions(qs);
     } catch (e) {
       setError(e.message);
@@ -193,6 +246,36 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
     reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leerjaar, vakFilter, showInactive]);
+
+  // Reset categoriefilter wanneer vak wisselt.
+  useEffect(() => {
+    setCategoryFilter(null);
+  }, [vakFilter]);
+
+  // Filter questions in-memory op category (Supabase query houdt dit niet bij).
+  const filteredQuestions = useMemo(() => {
+    if (!categoryFilter) return questions;
+    if (categoryFilter === 'NULL') return questions.filter((q) => !q.category_id);
+    return questions.filter((q) => q.category_id === categoryFilter);
+  }, [questions, categoryFilter]);
+
+  const categoriesByVak = useMemo(() => {
+    const map = {};
+    for (const c of categories) {
+      if (!map[c.vak]) map[c.vak] = [];
+      map[c.vak].push(c);
+    }
+    return map;
+  }, [categories]);
+
+  const changeCategory = async (q, newCategoryId) => {
+    try {
+      await setQuestionCategory(q.id, newCategoryId);
+      await reload();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   if (!supabaseEnabled) {
     return (
@@ -344,7 +427,7 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
             boxShadow: '0 2px 0 rgba(40,52,59,0.06)'
           }}
         >
-          {questions.length} {questions.length === 1 ? 'vraag' : 'vragen'}
+          {filteredQuestions.length} {filteredQuestions.length === 1 ? 'vraag' : 'vragen'}
         </div>
       </div>
 
@@ -376,7 +459,7 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
         })}
       </div>
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
         <button
           className="tap"
           onClick={() => setVakFilter(null)}
@@ -391,6 +474,42 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
           </button>
         ))}
       </div>
+
+      {/* Categorie-chips, alleen tonen als er categorieën zijn binnen scope */}
+      {categories.length > 0 && (
+        <div style={{ display: 'flex', gap: 5, marginBottom: 10, flexWrap: 'wrap' }}>
+          <button
+            className="tap"
+            onClick={() => setCategoryFilter(null)}
+            style={chipSmall(categoryFilter === null, '#7b8890')}
+          >
+            Alle categorieën
+          </button>
+          {categories
+            .filter((c) => !vakFilter || c.vak === vakFilter)
+            .map((c) => {
+              const vi = vakInfo[c.vak];
+              return (
+                <button
+                  key={c.id}
+                  className="tap"
+                  onClick={() => setCategoryFilter(c.id)}
+                  style={chipSmall(categoryFilter === c.id, vi?.kleur || '#7b8890')}
+                >
+                  {c.naam}
+                </button>
+              );
+            })}
+          <button
+            className="tap"
+            onClick={() => setCategoryFilter('NULL')}
+            style={chipSmall(categoryFilter === 'NULL', '#7b8890')}
+            title="Vragen zonder categorie"
+          >
+            ⚪ Ongetagd
+          </button>
+        </div>
+      )}
 
       <label
         style={{
@@ -512,7 +631,7 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
           <div style={{ textAlign: 'center', color: 'var(--ink-soft)', fontWeight: 700, fontSize: 13, padding: '24px 0' }}>
             Bezig met laden…
           </div>
-        ) : questions.length === 0 ? (
+        ) : filteredQuestions.length === 0 ? (
           <div style={{ textAlign: 'center', color: 'var(--ink-soft)', fontWeight: 700, fontSize: 13, padding: '24px 14px' }}>
             Geen vragen{vakFilter ? ` voor ${vakInfo[vakFilter]?.naam || vakFilter}` : ''} in leerjaar {leerjaar}.
             <br />
@@ -521,14 +640,16 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
             </span>
           </div>
         ) : (
-          questions.map((q) => (
+          filteredQuestions.map((q) => (
             <QuestionCard
               key={q.id}
               q={q}
               vakInfo={vakInfo[q.vak]}
+              categoriesForVak={categoriesByVak[q.vak] || []}
               onToggle={toggle}
               onDelete={remove}
               onToggleApproved={toggleApproved}
+              onChangeCategory={changeCategory}
             />
           ))
         )}
@@ -671,5 +792,20 @@ function chip(active, kleur) {
     background: active ? kleur : '#fff',
     color: active ? '#fff' : 'var(--ink)',
     boxShadow: active ? `0 3px 0 ${kleur}99` : '0 2px 0 rgba(40,52,59,0.06)'
+  };
+}
+
+function chipSmall(active, kleur) {
+  return {
+    padding: '4px 9px',
+    borderRadius: 999,
+    fontFamily: 'var(--body)',
+    fontWeight: 700,
+    fontSize: 10.5,
+    border: 'none',
+    cursor: 'pointer',
+    background: active ? kleur : '#fff',
+    color: active ? '#fff' : 'var(--ink)',
+    boxShadow: active ? `0 2px 0 ${kleur}99` : '0 1px 0 rgba(40,52,59,0.06)'
   };
 }

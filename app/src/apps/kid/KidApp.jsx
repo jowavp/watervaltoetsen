@@ -8,7 +8,8 @@ import {
   saveKidVakOrder
 } from '../../lib/storage.js';
 import { listVakken } from '../../lib/vakken.js';
-import { loadQuizForVak } from '../../lib/quiz.js';
+import { listCategories, countQuestionsPerCategory } from '../../lib/categories.js';
+import { loadQuizForCategory, loadQuizForVak } from '../../lib/quiz.js';
 import { signOut, supabaseEnabled } from '../../lib/supabase.js';
 import ProfileScreen from './ProfileScreen.jsx';
 import WaterfallMap from './WaterfallMap.jsx';
@@ -17,6 +18,7 @@ import ResultScreen from './ResultScreen.jsx';
 import TheoryScreen from './TheoryScreen.jsx';
 
 const DEFAULT_LEERJAAR = 5;
+const NULL_CATEGORY_ID = '__null__'; // sentinel voor de "Algemeen"-bucket
 
 export default function KidApp({ authUser, onExit }) {
   const initial = loadKidLocal();
@@ -24,17 +26,20 @@ export default function KidApp({ authUser, onExit }) {
   const [progress, setProgress] = useState(initial.progress || {});
   const [vakOrder, setVakOrder] = useState(initial.vakorder || Object.keys(D.vakken));
   const [vakkenMeta, setVakkenMeta] = useState(D.vakken);
+  // categories: array van { id, vak, naam, sort_order } — incl. virtuele "Algemeen"
+  const [categories, setCategories] = useState([]);
+  // counts per (vak, category) — sleutel `${vak}::${categoryId}`
+  const [catCounts, setCatCounts] = useState({});
   const [screen, setScreen] = useState('loading');
-  const [active, setActive] = useState(null); // current vak-node
+  const [active, setActive] = useState(null);
   const [quizQuestions, setQuizQuestions] = useState([]);
-  const [quizSource, setQuizSource] = useState('none');
   const [result, setResult] = useState(null);
   const [toast, setToast] = useState('');
 
   const leerjaar = profile.leerjaar || DEFAULT_LEERJAAR;
   const googleNaam = authUser?.user_metadata?.full_name || '';
 
-  // Hydrate profiel + voortgang vanuit Supabase.
+  // Hydrate profiel + voortgang.
   useEffect(() => {
     let cancelled = false;
     if (!supabaseEnabled) {
@@ -59,14 +64,16 @@ export default function KidApp({ authUser, onExit }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Vakken-metadata + volgorde laden zodra het leerjaar bekend is.
+  // Vakken + categorieën laden zodra leerjaar bekend is.
   useEffect(() => {
     let cancelled = false;
-    if (!supabaseEnabled) return;
-    if (!profile.leerjaar) return;
-    listVakken(profile.leerjaar).then((vk) => {
+    if (!supabaseEnabled || !profile.leerjaar) return;
+
+    (async () => {
+      const vk = await listVakken(profile.leerjaar);
       if (cancelled || !vk?.length) return;
       const activeVakken = vk.filter((v) => v.active);
+
       const meta = { ...D.vakken };
       for (const v of activeVakken) {
         meta[v.key] = {
@@ -80,49 +87,106 @@ export default function KidApp({ authUser, onExit }) {
           teacher: meta[v.key]?.teacher || 'ann'
         };
       }
-      setVakkenMeta(meta);
       const order = activeVakken.map((v) => v.key);
+
+      // Categorieën per vak + counts ophalen.
+      const cats = [];
+      const counts = {};
+      for (const v of activeVakken) {
+        const [catList, perCat] = await Promise.all([
+          listCategories({ leerjaar: profile.leerjaar, vak: v.key }),
+          countQuestionsPerCategory({ leerjaar: profile.leerjaar, vak: v.key })
+        ]);
+        for (const c of catList) {
+          if (!c.active) continue;
+          cats.push({ id: c.id, vak: v.key, naam: c.naam, sort_order: c.sort_order });
+          counts[`${v.key}::${c.id}`] = perCat[c.id] || 0;
+        }
+        // "Algemeen" bucket voor null-category questions, enkel als er vragen zijn.
+        if ((perCat._null || 0) > 0) {
+          cats.push({ id: NULL_CATEGORY_ID, vak: v.key, naam: 'Algemeen', sort_order: 9999 });
+          counts[`${v.key}::${NULL_CATEGORY_ID}`] = perCat._null;
+        }
+      }
+
+      if (cancelled) return;
+      setVakkenMeta(meta);
+      setCategories(cats);
+      setCatCounts(counts);
       if (order.length) {
         setVakOrder(order);
         saveKidVakOrder(order);
       }
-    });
+    })();
+
     return () => {
       cancelled = true;
     };
   }, [profile.leerjaar]);
 
-  // Voortgang persisteren bij elke wijziging.
   useEffect(() => {
     saveKidProgress(progress);
   }, [progress]);
 
-  // Eén bubbel per vak — de "stroom" van leerjaar.
-  // Status: 'done' (al gespeeld), 'now' (eerstvolgende onaangetaste), 'todo' (rest).
+  // Eén bubbel per categorie, gegroepeerd op vak-volgorde.
   const streamNodes = useMemo(() => {
+    if (categories.length === 0) {
+      // Eerste laad of geen categorieën nog — toon één vak-bubbel per actief vak.
+      let foundNow = false;
+      return vakOrder
+        .map((vakKey) => {
+          const vi = vakkenMeta[vakKey];
+          if (!vi) return null;
+          const progressKey = `vak:${vakKey}`;
+          const stars = progress[progressKey] || 0;
+          const played = progress[progressKey] != null;
+          let status;
+          if (played) status = 'done';
+          else if (!foundNow) {
+            status = 'now';
+            foundNow = true;
+          } else status = 'todo';
+          return {
+            id: progressKey,
+            vak: vakKey,
+            categoryId: null,
+            titel: vi.naam,
+            stars,
+            status
+          };
+        })
+        .filter(Boolean);
+    }
+
+    // Sorteer eerst op vak-volgorde, dan op sort_order binnen vak.
+    const ordered = [...categories].sort((a, b) => {
+      const oa = vakOrder.indexOf(a.vak);
+      const ob = vakOrder.indexOf(b.vak);
+      if (oa !== ob) return oa - ob;
+      return (a.sort_order || 0) - (b.sort_order || 0);
+    });
+
     let foundNow = false;
-    return vakOrder
-      .map((vakKey) => {
-        const vi = vakkenMeta[vakKey];
-        if (!vi) return null;
-        const stars = progress[vakKey] || 0;
-        const played = stars > 0 || progress[vakKey] === 0;
-        let status;
-        if (played) status = 'done';
-        else if (!foundNow) {
-          status = 'now';
-          foundNow = true;
-        } else status = 'todo';
-        return {
-          id: `vak-${vakKey}`,
-          vak: vakKey,
-          titel: vi.naam,
-          stars,
-          status
-        };
-      })
-      .filter(Boolean);
-  }, [vakOrder, vakkenMeta, progress]);
+    return ordered.map((c) => {
+      const progressKey = `cat:${c.id}`;
+      const stars = progress[progressKey] || 0;
+      const played = progress[progressKey] != null;
+      let status;
+      if (played) status = 'done';
+      else if (!foundNow) {
+        status = 'now';
+        foundNow = true;
+      } else status = 'todo';
+      return {
+        id: progressKey,
+        vak: c.vak,
+        categoryId: c.id === NULL_CATEGORY_ID ? null : c.id,
+        titel: c.naam,
+        stars,
+        status
+      };
+    });
+  }, [categories, vakOrder, vakkenMeta, progress]);
 
   const totalStars = Object.values(progress).reduce((s, v) => s + (v || 0), 0);
   const badges = Object.values(progress).filter((v) => v === 3).length;
@@ -142,17 +206,28 @@ export default function KidApp({ authUser, onExit }) {
   const openNode = async (n) => {
     setActive(n);
     setScreen('loading_quiz');
-    const size = vakkenMeta[n.vak]?.quiz_size || 10;
+    const vakQuizSize = vakkenMeta[n.vak]?.quiz_size || 10;
     try {
-      const { vragen, source } = await loadQuizForVak({ leerjaar, vak: n.vak, size });
+      let res;
+      if (categories.length === 0) {
+        // Geen categorieën beschikbaar: trek vak-brede kwis.
+        res = await loadQuizForVak({ leerjaar, vak: n.vak, size: vakQuizSize });
+      } else {
+        res = await loadQuizForCategory({
+          leerjaar,
+          vak: n.vak,
+          categoryId: n.categoryId,
+          vakQuizSize
+        });
+      }
+      const { vragen } = res || {};
       if (!vragen || vragen.length === 0) {
-        showToast('Nog geen vragen voor dit vak.');
+        showToast('Nog geen vragen hier — vraag aan je leerkracht.');
         setActive(null);
         setScreen('home');
         return;
       }
       setQuizQuestions(vragen);
-      setQuizSource(source);
       setScreen('quiz');
     } catch (e) {
       showToast('Kon kwis niet laden.');
@@ -171,8 +246,7 @@ export default function KidApp({ authUser, onExit }) {
         : res.total - res.wrongIdx.length > 0
         ? 1
         : 0;
-    // LAATSTE ronde wint — niet best-ever.
-    setProgress((prev) => ({ ...prev, [active.vak]: sterren }));
+    setProgress((prev) => ({ ...prev, [active.id]: sterren }));
     setResult({ ...res });
   };
 
@@ -243,7 +317,6 @@ export default function KidApp({ authUser, onExit }) {
           onReview={() => setScreen('theorie')}
           onRetry={async () => {
             setResult(null);
-            // Nieuwe random batch trekken voor "opnieuw spelen".
             if (active) await openNode(active);
           }}
           onHome={() => {

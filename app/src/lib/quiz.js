@@ -1,6 +1,6 @@
-// Quiz-loader: trekt random vragen voor een (leerjaar, vak) uit Supabase,
-// schudt zowel volgorde van de vragen als de MC-opties. Valt terug op de
-// hardcoded `data.js`-leerlijn als er nog niets gepubliceerd is.
+// Quiz-loader: trekt random vragen voor een (leerjaar, vak[, categorie]) uit
+// Supabase, schudt vragen + MC-opties, en valt terug op de hardcoded leerlijn
+// als er nog niets gepubliceerd is.
 
 import D from './data.js';
 import { supabase, supabaseEnabled } from './supabase.js';
@@ -36,18 +36,17 @@ function transformSupabaseRow(row) {
   } else if (row.type === 'match') {
     q.pairs = Array.isArray(p.pairs) ? p.pairs : [];
   }
-  // Defaults voor theorie
   if (!q.theory || typeof q.theory !== 'object') {
     q.theory = { titel: 'Uitleg', text: 'Bekijk de bron of vraag het je leerkracht.' };
   }
   return q;
 }
 
-async function fetchSupabaseQuestions(leerjaar, vak) {
+async function fetchSupabaseQuestionsForVak(leerjaar, vak) {
   if (!supabaseEnabled) return [];
   const { data, error } = await supabase
     .from('questions')
-    .select('id, vak, type, payload, q, bank:question_banks!inner(leerjaar, status)')
+    .select('id, vak, type, payload, q, category_id, bank:question_banks!inner(leerjaar, status)')
     .eq('vak', vak)
     .eq('active', true)
     .eq('approved', true)
@@ -57,7 +56,7 @@ async function fetchSupabaseQuestions(leerjaar, vak) {
     console.warn('[quiz] fetch:', error.message);
     return [];
   }
-  return (data || []).map(transformSupabaseRow);
+  return data || [];
 }
 
 function fallbackQuestionsForVak(vak) {
@@ -70,18 +69,70 @@ function fallbackQuestionsForVak(vak) {
   return all;
 }
 
-export async function loadQuizForVak({ leerjaar, vak, size = 10 }) {
-  const supabaseQs = await fetchSupabaseQuestions(leerjaar, vak);
-  let pool = supabaseQs;
+// Tel vragen per categorie voor een (leerjaar, vak). _null-key = vragen
+// zonder categorie ("Algemeen"-bucket).
+export function countsByCategory(rows) {
+  const counts = {};
+  for (const row of rows) {
+    const key = row.category_id || '_null';
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
+// Proportionele kwis-grootte voor één categorie:
+//   round(vakQuizSize * catCount / vakTotal), minimum 1
+export function proportionalSizeFor({ catCount, vakTotal, vakQuizSize }) {
+  if (!vakTotal || !catCount) return 0;
+  const raw = (vakQuizSize * catCount) / vakTotal;
+  return Math.max(1, Math.round(raw));
+}
+
+// Load vragen voor een specifieke (vak, categorie). categoryId mag `null` zijn
+// voor de "Algemeen" virtuele bucket.
+export async function loadQuizForCategory({ leerjaar, vak, categoryId, vakQuizSize = 10 }) {
+  const allRows = await fetchSupabaseQuestionsForVak(leerjaar, vak);
   let source = 'supabase';
-  if (pool.length === 0) {
+  let pool;
+  if (allRows.length === 0) {
+    // Geen Supabase-vragen → fallback naar hardcoded leerlijn (geen categorie-onderscheid).
     pool = fallbackQuestionsForVak(vak);
     source = pool.length > 0 ? 'fallback' : 'none';
+    if (pool.length === 0) return { vragen: [], source };
+    const shuffled = shuffleArray(pool);
+    return { vragen: shuffled.slice(0, vakQuizSize).map(shuffleMCOptions), source };
   }
-  if (pool.length === 0) {
-    return { vragen: [], source };
+
+  const vakTotal = allRows.length;
+  const inCategory = allRows.filter((r) => (r.category_id || null) === (categoryId || null));
+  if (inCategory.length === 0) return { vragen: [], source };
+
+  const size = proportionalSizeFor({
+    catCount: inCategory.length,
+    vakTotal,
+    vakQuizSize
+  });
+
+  const transformed = inCategory.map(transformSupabaseRow);
+  const shuffled = shuffleArray(transformed);
+  return {
+    vragen: shuffled.slice(0, size).map(shuffleMCOptions),
+    source,
+    catCount: inCategory.length,
+    vakTotal
+  };
+}
+
+// Volledige vak-kwis (oude API behouden voor fallback en backward-compat).
+export async function loadQuizForVak({ leerjaar, vak, size = 10 }) {
+  const allRows = await fetchSupabaseQuestionsForVak(leerjaar, vak);
+  if (allRows.length === 0) {
+    const fallback = fallbackQuestionsForVak(vak);
+    if (fallback.length === 0) return { vragen: [], source: 'none' };
+    const shuffled = shuffleArray(fallback);
+    return { vragen: shuffled.slice(0, size).map(shuffleMCOptions), source: 'fallback' };
   }
-  const shuffled = shuffleArray(pool);
-  const picked = shuffled.slice(0, size);
-  return { vragen: picked.map(shuffleMCOptions), source };
+  const transformed = allRows.map(transformSupabaseRow);
+  const shuffled = shuffleArray(transformed);
+  return { vragen: shuffled.slice(0, size).map(shuffleMCOptions), source: 'supabase' };
 }
