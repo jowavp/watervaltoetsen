@@ -42,35 +42,262 @@ npm run preview        # serveert /dist op poort 4173 om de PWA te testen
 
 De build produceert een statische site met service worker en manifest — host op Vercel, Netlify, Cloudflare Pages of een eigen statische webserver. Voor installatie op een toestel moet de site via HTTPS bereikbaar zijn (localhost werkt ook).
 
-## Vragen-generatie (cron)
+## Vragen genereren met AI
 
-Een Node-script (`scripts/generate-questions.mjs`) leest de Supabase wachtrij `generation_requests` (status `queued`), genereert vragen via Claude op basis van de bronnen van de leerkracht, en schrijft ze terug als een nieuwe `question_banks` rij met status `pending_review`. De leerkracht ziet ze daarna onder *Vragen beheren*.
+De leerkracht zet aanvragen klaar in de PWA (*Vragen genereren → "Vraag nieuwe set vragen aan"*), een Node-script verwerkt die wachtrij met een LLM, en de gegenereerde vragen verschijnen onder *Vragen beheren* met status `Wacht op nakijk`. Dezelfde codebase ondersteunt **drie providers** zodat je kan kiezen wat past bij wat je betaalt en waar je het draait.
 
-Trigger:
-- **Automatisch**: GitHub Actions cron — elke nacht om 03:00 UTC (`.github/workflows/generate.yml`).
-- **Handmatig in CI**: `gh workflow run "Generate questions (cron)" --repo <user>/<repo>` of via *Actions → Run workflow*.
-- **Lokaal met Gemini/Anthropic API**: `cd scripts && cp .env.example .env && npm run generate`.
-- **Lokaal met je Claude Code Pro-sessie** (geen API credits nodig): zet `LLM_PROVIDER=claude-code` in `scripts/.env`, zorg dat je via `claude` CLI ingelogd bent met je Pro/Max-account, en run `npm run generate`. Of, vanuit een Claude Code sessie in deze repo: `/generate-questions`.
+### End-to-end flow
 
-> De Claude Code-route omzeilt de Anthropic API en gebruikt je abonnement-quota. Verschil met CI: de cron-workflow heeft geen `claude` CLI beschikbaar — daar gebruik je Gemini of Anthropic API.
+```
+┌────────────────────────────────┐
+│ Leerkracht (PWA)               │
+│ → Vragen genereren             │
+│ → Klikt "Vraag nieuwe set      │
+│    vragen aan" per vak         │
+└──────────────┬─────────────────┘
+               │ INSERT
+               ▼
+┌────────────────────────────────┐
+│ Supabase                       │
+│  generation_requests           │  ← RLS: enkel eigenaar (Google-leerkracht)
+│  status='queued'               │
+└──────────────┬─────────────────┘
+               │ poll
+               ▼
+┌────────────────────────────────┐
+│ scripts/generate-questions.mjs │  ← service_role key bypasst RLS
+│  • status='queued' → 'running' │
+│  • Roept LLM met de bronnen    │
+│    van die leerkracht          │
+│  • status='done' | 'failed'    │
+└──────────────┬─────────────────┘
+               │ INSERT
+               ▼
+┌────────────────────────────────┐
+│ Supabase                       │
+│  question_banks (pending_review)│
+│  questions (approved=false)    │
+└──────────────┬─────────────────┘
+               │ SELECT
+               ▼
+┌────────────────────────────────┐
+│ Leerkracht (PWA)               │
+│ → Vragen beheren               │
+│ → activeer, deactiveer of      │
+│    verwijder                   │
+└────────────────────────────────┘
+```
 
-**Vereiste secrets** (`Settings → Secrets and variables → Actions`):
+Het script kan draaien als **GitHub Actions cron** (productie), **handmatige CI run**, **lokaal vanuit shell**, of vanuit een **Claude Code sessie** via een slash command. Welke provider je gebruikt is een env-variabele — de logica blijft identiek.
 
-| Naam | Verplicht | Waar te vinden |
-|------|-----------|----------------|
-| `SUPABASE_URL` | altijd | Supabase Dashboard → Project Settings → API Keys |
-| `SUPABASE_SERVICE_ROLE_KEY` | altijd | Supabase Dashboard → Project Settings → API Keys → **service_role** (LET OP: nooit in de browser) |
-| `GEMINI_API_KEY` | bij Gemini (default) | <https://aistudio.google.com/apikey> — gratis tier volstaat ruim voor schoolgebruik |
-| `ANTHROPIC_API_KEY` | bij Anthropic | <https://console.anthropic.com> → API Keys |
+### Providers — overzicht
 
-**LLM-provider kiezen** (optionele *repository variable*, niet secret — `Settings → Secrets and variables → Actions → Variables`):
+| Provider key | Auth | Kost | Gebruikt voor |
+|--------------|------|------|---------------|
+| `gemini` *(default)* | API key | Free tier: 1500 req/dag op flash-modellen | CI cron, productie zonder Anthropic credits |
+| `anthropic` | API key | Pay-per-token | CI cron, wanneer je Anthropic API credits hebt |
+| `claude-code` | Claude Code CLI login | Verbruikt je **Claude Pro/Max abonnement** quota | **Lokaal** triggeren — niet bruikbaar in CI |
 
-| Variabele | Default | Mogelijke waarden |
-|-----------|---------|-------------------|
-| `LLM_PROVIDER` | `gemini` | `gemini` of `anthropic` |
-| `LLM_MODEL` | provider-specifiek | bv. `gemini-2.5-pro`, `claude-sonnet-4-6` |
+Vuistregel:
+- **CI / cron** → `gemini` (gratis) of `anthropic` (als je credits hebt)
+- **Lokaal** → `claude-code` (geen API credits nodig — gebruikt je abonnement)
 
-> De service_role key omzeilt RLS — daarom enkel server-side gebruiken (CI of jouw eigen machine). Verschillend van de anon-key die in de PWA terechtkomt.
+### Model-keuze per provider
+
+Het script kiest een default; je kan overschrijven via `MODEL` env var (lokaal) of `LLM_MODEL` repository variable (CI).
+
+| Provider | Default model | Goede alternatieven |
+|----------|---------------|---------------------|
+| `gemini` | `gemini-2.5-flash` | `gemini-2.5-pro` (trager, meer kwaliteit) |
+| `anthropic` | `claude-haiku-4-5-20251001` | `claude-sonnet-4-6`, `claude-opus-4-7` |
+| `claude-code` | Default van je CLI (meestal Sonnet) | Geef `MODEL=claude-opus-4-7` als je expliciet Opus wil |
+
+> Voor de kwaliteit van schoolvragen voor leerjaar 1–6 is een **flash/haiku** klasse model meestal voldoende. Stap op naar pro/sonnet als je merkt dat vragen te triviaal of te vaag zijn.
+
+### Environment-variabelen referentie
+
+Volledige lijst van wat het script leest:
+
+| Variabele | Verplicht? | Default | Beschrijving |
+|-----------|-----------|---------|--------------|
+| `SUPABASE_URL` | ✅ altijd | — | URL van je Supabase project. |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ altijd | — | Server-only key die RLS bypasst. Komt **nooit** in de PWA bundle. |
+| `LLM_PROVIDER` | nee | `gemini` | `gemini`, `anthropic`, of `claude-code`. |
+| `GEMINI_API_KEY` | bij `gemini` | — | Van <https://aistudio.google.com/apikey>. |
+| `ANTHROPIC_API_KEY` | bij `anthropic` | — | Van <https://console.anthropic.com>. Bij `claude-code` automatisch genegeerd. |
+| `MODEL` | nee | provider-default | Override van het model (zie tabel hierboven). |
+| `MAX_REQUESTS` | nee | `10` | Max aantal queue-items per run — bescherming tegen runaway-kosten. |
+
+### Trigger 1 — GitHub Actions cron *(productie)*
+
+Workflow: `.github/workflows/generate.yml`. Draait elke nacht om **03:00 UTC** (≈ 04:00 BE winter / 05:00 BE zomer).
+
+Setup éénmalig:
+
+```bash
+# Verplicht (Gemini route)
+gh secret set SUPABASE_URL --repo <user>/<repo>
+gh secret set SUPABASE_SERVICE_ROLE_KEY --repo <user>/<repo>
+gh secret set GEMINI_API_KEY --repo <user>/<repo>
+
+# Optioneel — overschrijf provider en model
+gh variable set LLM_PROVIDER --body "anthropic" --repo <user>/<repo>
+gh variable set LLM_MODEL --body "claude-sonnet-4-6" --repo <user>/<repo>
+```
+
+Pas het schedule aan in `.github/workflows/generate.yml`:
+
+```yaml
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC dagelijks
+    # - cron: '0 */6 * * *'  # elke 6 uur
+    # - cron: '0 3 * * 1-5'  # enkel op weekdagen
+```
+
+> **Belangrijk** over GitHub Actions cron: schedules kunnen tot ±15 min vertragen bij hoge load, en runs worden **uitgeschakeld na 60 dagen inactiviteit** in de repo. Push minstens eenmaal per twee maanden, of trigger handmatig.
+
+### Trigger 2 — Handmatige CI run
+
+Wachten op de cron is onnodig — je kan op elk moment manueel runnen:
+
+```bash
+gh workflow run "Generate questions (cron)" --repo <user>/<repo> -f max_requests=20
+gh run list --workflow=generate.yml --repo <user>/<repo> --limit 3
+gh run watch --repo <user>/<repo>
+```
+
+Of via de browser: *Actions → Generate questions (cron) → Run workflow*. Je kan optioneel `max_requests` overschrijven.
+
+### Trigger 3 — Lokaal vanuit shell *(elke provider)*
+
+```bash
+cd scripts
+cp .env.example .env       # eerste keer
+# Vul .env aan met de juiste env vars voor je gekozen provider
+npm install                 # eerste keer
+npm run generate
+```
+
+`npm run generate` leest `.env` automatisch via Node's `--env-file-if-exists` flag — geen `dotenv` package nodig.
+
+### Trigger 4 — Lokaal vanuit Claude Code *(geen API credits)*
+
+Vereist: `claude` CLI geïnstalleerd en ingelogd met je **Pro of Max** abonnement.
+
+```bash
+# Eerste keer: zorg dat scripts/.env bestaat met SUPABASE_URL,
+# SUPABASE_SERVICE_ROLE_KEY en LLM_PROVIDER=claude-code
+```
+
+Daarna twee opties:
+
+**a) Vanuit een shell** (zelfs zonder Claude Code sessie open):
+
+```bash
+npm --prefix scripts run generate
+```
+
+**b) Vanuit een Claude Code sessie in deze repo:**
+
+```
+/generate-questions
+```
+
+De slash command staat in `.claude/commands/generate-questions.md` en draait gewoon `cd scripts && npm run generate`.
+
+### Lokale setup voor `claude-code` provider
+
+Minimale `scripts/.env`:
+
+```
+SUPABASE_URL=https://<jouw-project>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...service_role...
+LLM_PROVIDER=claude-code
+```
+
+Géén `GEMINI_API_KEY` of `ANTHROPIC_API_KEY` nodig. Het script verwijdert zelfs `ANTHROPIC_API_KEY` uit `process.env` op het moment dat hij `claude-code` provider ziet — zo gaat de Pro-sessie zeker boven een per-ongeluk gezette API-key.
+
+### Provider wisselen
+
+**Lokaal**: pas `LLM_PROVIDER` in `scripts/.env` aan. Voorbeelden:
+
+```
+LLM_PROVIDER=claude-code          # geen API key nodig
+LLM_PROVIDER=gemini               # + GEMINI_API_KEY
+LLM_PROVIDER=anthropic            # + ANTHROPIC_API_KEY
+MODEL=gemini-2.5-pro              # optioneel model-override
+```
+
+**In CI**: gebruik repository *variables* (niet secrets — variables mogen leesbaar zijn):
+
+```bash
+gh variable set LLM_PROVIDER --body "gemini" --repo <user>/<repo>
+gh variable set LLM_MODEL --body "gemini-2.5-pro" --repo <user>/<repo>
+```
+
+CI kan `claude-code` niet gebruiken — daar is geen Claude Code CLI of Pro-sessie.
+
+### Cron-instellingen — fine-tuning
+
+`.github/workflows/generate.yml`:
+
+```yaml
+on:
+  schedule:
+    - cron: '0 3 * * *'                 # ← pas hier aan
+  workflow_dispatch:
+    inputs:
+      max_requests:
+        description: 'Max aanvragen per run'
+        required: false
+        default: '10'
+
+# ...
+env:
+  MAX_REQUESTS: ${{ inputs.max_requests || '10' }}
+```
+
+Veelgebruikte schedule-patronen:
+
+| Patroon | Cron expressie |
+|---------|---------------|
+| Dagelijks om 03:00 UTC | `0 3 * * *` |
+| Elke 6 uur | `0 */6 * * *` |
+| Enkel weekdagen | `0 3 * * 1-5` |
+| Zondag middernacht | `0 0 * * 0` |
+| Elke 15 minuten (max actie-burn!) | `*/15 * * * *` |
+
+`MAX_REQUESTS` per run beperkt hoeveel queue-items één run aanpakt — handig om kosten te plafonneren als de queue volloopt.
+
+### Vragen goedkeuren na generatie
+
+Vragen uit de cron krijgen `approved=false` en zitten in een bank met `status='pending_review'`. Ze zijn voor leerkrachten zichtbaar in *Vragen beheren* maar **niet** voor leerlingen (RLS `questions read published` checkt `approved=true AND active=true AND bank.status='published'`).
+
+Op dit moment kan een leerkracht in de UI alleen individuele vragen actief/inactief zetten of verwijderen — een "Keur volledige batch goed"-knop staat op de roadmap.
+
+### Troubleshooting
+
+| Foutmelding | Oorzaak | Oplossing |
+|------------|---------|-----------|
+| `Missing SUPABASE_URL of SUPABASE_SERVICE_ROLE_KEY` | env vars niet gezet | Vul `scripts/.env` aan of stel secrets in op de repo. |
+| `LLM_PROVIDER=gemini, maar GEMINI_API_KEY ontbreekt.` | API key niet gevonden | Zet `GEMINI_API_KEY` of switch provider. |
+| `429 Too Many Requests` van Gemini | Gratis-tier rate-limit overschreden | Wacht; of switch tijdelijk naar `anthropic`/`claude-code`. |
+| `Claude Code SDK: error_max_turns` | Model gaf te lange response of beleidsweigering | Kleinere `num_questions` per aanvraag, of probeer ander model via `MODEL=`. |
+| `Model gaf geen geldige JSON terug` | LLM week af van JSON-format | Re-run; bij herhaling: schakel naar groter model (`-pro` / `-sonnet`). |
+| `new row violates row-level security policy` | Verkeerde key — anon i.p.v. service_role | Controleer dat `SUPABASE_SERVICE_ROLE_KEY` echt de **service_role** is, niet de anon-key. |
+
+Logs bekijken:
+
+```bash
+# CI
+gh run list --workflow=generate.yml --repo <user>/<repo>
+gh run view <run-id> --repo <user>/<repo> --log
+
+# Lokaal — gewoon op stdout in de terminal waar je `npm run generate` runt
+```
+
+> De service_role key omzeilt RLS — daarom **enkel server-side gebruiken** (CI secret of jouw eigen `.env`). Verschillend van de anon-key die in de PWA terechtkomt en wél publiek mag.
 
 ## Deploy naar GitHub Pages
 
@@ -103,13 +330,16 @@ Daarna start de app full-screen, zonder browser-chroom, en werkt offline na het 
 
 ## Wat er werkt
 
-- Volledige leerling-flow: profiel, waterval-map, kwis (mc/tf/fill/match), resultaat met sterren, theorie-review met leerkracht-avatar en Nederlandse spraaksynthese.
-- Volledige leerkracht-flow: profiel, kennisbronnen (onthoudmap/contracten/werkbladen), automatische generatie van 50 kwisvragen, nakijken + publiceren.
-- Persistentie via `localStorage` met optionele Supabase-sync (profiel, voortgang, vak-volgorde, kennisbronnen, gepubliceerde vragenbanken).
-- Offline-first: na het eerste bezoek werkt alles zonder netwerk.
+- **Leerlingen**: anonieme sessie, profiel, waterval-map per leerjaar, kwis (mc/tf/fill/match), resultaat met sterren, theorie-review met leerkracht-avatar en Nederlandse spraaksynthese.
+- **Leerkrachten** (Google login): profiel, **vakken-CRUD per leerjaar**, **sources-CRUD** (onthoudmap/contracten/werkbladen), **vragen-CRUD** met actief-toggle, **per-vak generatie-aanvragen** via wachtrij.
+- **AI-vragen-generatie**: drie providers (Gemini default, Anthropic, of lokaal via je Claude Code Pro-sessie). Triggerbaar via cron, handmatige CI-run, lokale shell of `/generate-questions` slash command.
+- **Auth-architectuur**: anonymous-sign-in voor kids, Google OAuth voor leerkrachten, RLS-gescheiden zodat alleen non-anonymous gebruikers content kunnen schrijven.
+- **PWA**: offline-first via service worker, installeerbaar op Android/iOS/desktop.
+- **Persistentie**: Supabase met `localStorage` als offline-fallback voor de kid-flow.
 
 ## Wat er nog niet werkt
 
-- AI-verrijking via een echte LLM. In het prototype hing dit aan `window.claude.complete`; in productie hoort dit thuis in een Supabase Edge Function die de leerkracht-sleutel veilig houdt. De template-based generator zit er al in.
-- Echte bestand-upload voor PDF/foto's — de UI is voorzien maar uploads zijn nog gemockt (Supabase Storage staat klaar via `storage_path` in `sources`).
-- Klas- en leerling-koppeling voor de leerkracht (alleen schema-aanzet).
+- **"Batch goedkeuren"-knop** voor pending question banks — individuele vragen kunnen wel actief gezet of verwijderd worden.
+- **Echte bestand-upload** voor PDF/foto's bij sources — UI staat klaar maar uploads zijn nog gemockt (Supabase Storage staat klaar via `storage_path` in `sources`).
+- **Klas- en leerling-koppeling** voor de leerkracht (geen schema voor klassen of teacher↔student links).
+- **Onderdelen/nodes per vak** vanuit Supabase — momenteel nog hardcoded in `lib/data.js`; de kid-map wijzigt niet wanneer een leerkracht een nieuw vak toevoegt.
