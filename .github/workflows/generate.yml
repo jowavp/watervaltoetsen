@@ -29,7 +29,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # @supabase/realtime-js heeft native WebSocket nodig — Node 22+.
+          node-version: 22
           cache: npm
           cache-dependency-path: scripts/package-lock.json
 
