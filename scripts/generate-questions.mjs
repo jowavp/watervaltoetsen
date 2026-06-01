@@ -19,9 +19,12 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
+// Trim env-waarden — leading/trailing whitespace en wrapping quotes komen vaak
+// voor bij verkeerd geknipte secrets.
+const trim = (v) => (v || '').toString().trim().replace(/^['"]|['"]$/g, '');
+const SUPABASE_URL = trim(process.env.SUPABASE_URL);
+const SUPABASE_KEY = trim(process.env.SUPABASE_SERVICE_ROLE_KEY);
+const PROVIDER = trim(process.env.LLM_PROVIDER || 'gemini').toLowerCase();
 const MAX_REQUESTS = parseInt(process.env.MAX_REQUESTS || '10', 10);
 
 const DEFAULT_MODEL = {
@@ -33,6 +36,17 @@ const MODEL = process.env.MODEL || DEFAULT_MODEL[PROVIDER] || DEFAULT_MODEL.gemi
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('Missing SUPABASE_URL of SUPABASE_SERVICE_ROLE_KEY');
+  process.exit(1);
+}
+if (!/^https?:\/\//i.test(SUPABASE_URL)) {
+  console.error(
+    `Invalid SUPABASE_URL — moet beginnen met "https://". Gekregen: "${SUPABASE_URL.slice(0, 12)}…" (${SUPABASE_URL.length} chars).`
+  );
+  console.error('Controleer of je geen wrapping quotes of leading whitespace in de secret hebt.');
+  process.exit(1);
+}
+if (SUPABASE_KEY.length < 40) {
+  console.error(`SUPABASE_SERVICE_ROLE_KEY lijkt te kort (${SUPABASE_KEY.length} chars). Service-role key is meestal een lange JWT die met "eyJ" begint.`);
   process.exit(1);
 }
 
