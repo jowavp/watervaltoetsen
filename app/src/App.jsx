@@ -235,6 +235,7 @@ function Shell() {
     let cancelled = false;
 
     const settleUser = async (user) => {
+      if (cancelled) return;
       if (!user) {
         setAuthUser(null);
         setIsTeacher(null);
@@ -242,28 +243,43 @@ function Shell() {
         return;
       }
       setAuthUser(user);
-      const t = await isTeacherEmail(user.email);
-      if (cancelled) return;
-      setIsTeacher(t);
-      // Leerlingen worden direct doorgestuurd; leerkrachten blijven op role-picker.
-      if (!t) setRole('kid');
+      try {
+        const t = await isTeacherEmail(user.email);
+        if (cancelled) return;
+        setIsTeacher(t);
+        if (!t) setRole('kid');
+      } catch (e) {
+        console.warn('[shell] teacher check failed:', e);
+        // Bij twijfel: behandel als leerling. Zo blokkeert een gefaalde
+        // teacher_emails-check de app niet.
+        setIsTeacher(false);
+        setRole('kid');
+      }
     };
 
-    supabase.auth.getSession().then(async ({ data }) => {
-      if (cancelled) return;
-      await settleUser(data?.session?.user || null);
-      setBootstrapped(true);
-    });
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (cancelled) return;
+        await settleUser(data?.session?.user || null);
+      } catch (e) {
+        console.warn('[shell] bootstrap failed:', e);
+      } finally {
+        if (!cancelled) setBootstrapped(true);
+      }
+    })();
 
     const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (cancelled) return;
+      // INITIAL_SESSION laten we over aan de bootstrap-call hierboven om
+      // race-conditions en dubbele state-updates te vermijden.
       if (event === 'SIGNED_OUT') {
         setAuthUser(null);
         setIsTeacher(null);
         setRole(null);
         return;
       }
-      if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
         await settleUser(session?.user || null);
       }
     });
