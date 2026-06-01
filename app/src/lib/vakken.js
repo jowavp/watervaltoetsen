@@ -31,7 +31,7 @@ export async function listVakken(leerjaar) {
   await ensureUser();
   const { data, error } = await supabase
     .from('vakken')
-    .select('id,leerjaar,key,naam,kleur,tint,icon,active,sort_order')
+    .select('id,leerjaar,key,naam,kleur,tint,icon,active,sort_order,test_date')
     .eq('leerjaar', leerjaar)
     .order('sort_order')
     .order('naam');
@@ -42,7 +42,7 @@ export async function listVakken(leerjaar) {
   return data || [];
 }
 
-export async function createVak({ leerjaar, naam, kleur, tint, icon, sort_order }) {
+export async function createVak({ leerjaar, naam, kleur, tint, icon, sort_order, test_date }) {
   if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
   const uid = await ensureUser();
   const key = slugify(naam);
@@ -57,6 +57,7 @@ export async function createVak({ leerjaar, naam, kleur, tint, icon, sort_order 
       tint: tint || '#e4f5fb',
       icon: icon || null,
       sort_order: sort_order ?? 0,
+      test_date: test_date || null,
       created_by: uid
     })
     .select()
@@ -68,7 +69,7 @@ export async function createVak({ leerjaar, naam, kleur, tint, icon, sort_order 
 export async function updateVak(id, patch) {
   if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
   await ensureUser();
-  const allowed = ['naam', 'kleur', 'tint', 'icon', 'active', 'sort_order'];
+  const allowed = ['naam', 'kleur', 'tint', 'icon', 'active', 'sort_order', 'test_date'];
   const body = {};
   for (const k of allowed) if (k in patch) body[k] = patch[k];
   if (patch.naam) body.key = slugify(patch.naam);
@@ -91,4 +92,19 @@ export async function reorderVakken(ids) {
   await Promise.all(
     ids.map((id, i) => supabase.from('vakken').update({ sort_order: i + 1 }).eq('id', id))
   );
+}
+
+// Herschik vakken op basis van test_date (oudst eerst). Vakken zonder datum
+// belanden achteraan in hun huidige onderlinge volgorde.
+export async function sortVakkenByTestDate(leerjaar) {
+  const vakken = await listVakken(leerjaar);
+  const dated = vakken
+    .filter((v) => v.test_date)
+    .sort((a, b) => a.test_date.localeCompare(b.test_date));
+  const undated = vakken
+    .filter((v) => !v.test_date)
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const ordered = [...dated, ...undated];
+  if (!ordered.length) return;
+  await reorderVakken(ordered.map((v) => v.id));
 }

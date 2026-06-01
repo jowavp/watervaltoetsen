@@ -13,8 +13,7 @@ export default function WaterfallMap({
   vakken,
   onOpenNode,
   onLeerjaar,
-  onProfiel,
-  onPlan
+  onProfiel
 }) {
   const W = 332,
     GAP = 104,
@@ -117,42 +116,17 @@ export default function WaterfallMap({
             );
           })}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 9 }}>
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 800,
-              letterSpacing: 0.4,
-              color: 'var(--ink-soft)',
-              flex: 1,
-              lineHeight: 1.25
-            }}
-          >
-            De stroom van wat je dit jaar moet kennen — volg Druppie naar beneden.
-          </div>
-          <button
-            className="tap"
-            onClick={onPlan}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5,
-              background: '#fff',
-              border: 'none',
-              borderRadius: 999,
-              padding: '7px 12px',
-              fontWeight: 800,
-              fontSize: 12.5,
-              color: 'var(--water)',
-              boxShadow: '0 3px 0 rgba(40,52,59,0.08)',
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-              fontFamily: 'var(--body)',
-              flexShrink: 0
-            }}
-          >
-            ↕ Volgorde
-          </button>
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 800,
+            letterSpacing: 0.4,
+            color: 'var(--ink-soft)',
+            marginTop: 9,
+            lineHeight: 1.25
+          }}
+        >
+          De stroom van wat je dit jaar moet kennen — kies een onderdeel om te oefenen.
         </div>
       </div>
 
@@ -225,7 +199,6 @@ export default function WaterfallMap({
             const x = xOf(i),
               y = yOf(i);
             const vi = vakken[n.vak];
-            const lock = n.status === 'lock';
             const now = n.status === 'now';
             const done = n.status === 'done';
             return (
@@ -251,18 +224,16 @@ export default function WaterfallMap({
                     cursor: 'pointer',
                     position: 'relative',
                     border: now ? '4px solid #fff' : 'none',
-                    background: lock ? '#dfd8ca' : vi.kleur,
+                    background: vi.kleur,
                     boxShadow: now
                       ? `0 0 0 6px ${vi.kleur}44, 0 6px 0 ${vi.kleur}`
-                      : lock
-                      ? '0 5px 0 #c7bfb0'
                       : `0 6px 0 ${shade(vi.kleur)}`,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center'
                   }}
                 >
-                  {lock ? <span style={{ fontSize: 22 }}>🔒</span> : <VakIcon vak={n.vak} size={28} c="#fff" stroke={2.4} />}
+                  <VakIcon vak={n.vak} size={28} c="#fff" stroke={2.4} />
                   {done && (
                     <span style={{ position: 'absolute', bottom: -10, left: '50%', transform: 'translateX(-50%)' }}>
                       <Stars value={n.stars} size={13} gap={1} />
@@ -274,7 +245,7 @@ export default function WaterfallMap({
                     fontFamily: 'var(--display)',
                     fontWeight: 600,
                     fontSize: 12.5,
-                    color: lock ? '#b3aa9a' : 'var(--ink)',
+                    color: 'var(--ink)',
                     marginTop: done ? 14 : 8,
                     maxWidth: 110
                   }}

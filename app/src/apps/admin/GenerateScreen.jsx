@@ -136,7 +136,7 @@ export default function GenerateScreen({ leerjaar, onLeerjaar, onBack, onSeeQues
   const [counts, setCounts] = useState({}); // vak.key → count actieve vragen
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [num, setNum] = useState(10);
+  const [num, setNum] = useState(50);
   const [sourceMode, setSourceMode] = useState('mix');
   const [error, setError] = useState(null);
 
@@ -322,11 +322,11 @@ export default function GenerateScreen({ leerjaar, onLeerjaar, onBack, onSeeQues
           <input
             type="number"
             min={1}
-            max={50}
+            max={100}
             value={num}
-            onChange={(e) => setNum(parseInt(e.target.value || '10', 10))}
+            onChange={(e) => setNum(parseInt(e.target.value || '50', 10))}
             style={{
-              width: 50,
+              width: 55,
               padding: '4px 7px',
               borderRadius: 8,
               border: '1.5px solid var(--border)',

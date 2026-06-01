@@ -27,7 +27,7 @@ const DEFAULT_MODEL = {
   anthropic: 'claude-haiku-4-5-20251001',
   'claude-code': undefined
 };
-const MODEL = process.env.MODEL || DEFAULT_MODEL[PROVIDER] || DEFAULT_MODEL.gemini;
+const MODEL = process.env.MODEL || (PROVIDER in DEFAULT_MODEL ? DEFAULT_MODEL[PROVIDER] : DEFAULT_MODEL.gemini);
 
 // Cap individuele file size (inline base64 zou anders te groot worden).
 const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB

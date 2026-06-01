@@ -6,11 +6,29 @@ import {
   deleteVak,
   listVakken,
   reorderVakken,
+  sortVakkenByTestDate,
   updateVak
 } from '../../lib/vakken.js';
 import { supabaseEnabled } from '../../lib/supabase.js';
 
+function formatDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + 'T00:00:00');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((d - today) / (1000 * 60 * 60 * 24));
+  const dateStr = d.toLocaleDateString('nl-BE', { day: 'numeric', month: 'short' });
+  if (diffDays === 0) return `vandaag · ${dateStr}`;
+  if (diffDays === 1) return `morgen · ${dateStr}`;
+  if (diffDays === -1) return `gisteren · ${dateStr}`;
+  if (diffDays > 1 && diffDays <= 14) return `over ${diffDays}d · ${dateStr}`;
+  if (diffDays < -1 && diffDays >= -14) return `${-diffDays}d geleden · ${dateStr}`;
+  return dateStr;
+}
+
 function VakRow({ vak, onEdit, onToggle, onDelete, onMove, isFirst, isLast }) {
+  const dateLabel = formatDate(vak.test_date);
+  const dateInFuture = vak.test_date && new Date(vak.test_date + 'T00:00:00') >= new Date(new Date().setHours(0,0,0,0));
   return (
     <div
       style={{
@@ -46,6 +64,12 @@ function VakRow({ vak, onEdit, onToggle, onDelete, onMove, isFirst, isLast }) {
         </div>
         <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)' }}>
           {vak.active ? 'Actief' : 'Inactief'} · {vak.key}
+          {dateLabel && (
+            <>
+              {' · '}
+              <span style={{ color: dateInFuture ? vak.kleur : 'var(--ink-soft)' }}>📅 {dateLabel}</span>
+            </>
+          )}
         </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -110,6 +134,7 @@ function arrowBtn(dis) {
 function VakFormDialog({ initial, onSave, onCancel }) {
   const [naam, setNaam] = useState(initial?.naam || '');
   const [icon, setIcon] = useState(initial?.icon || '📚');
+  const [testDate, setTestDate] = useState(initial?.test_date || '');
   const [kleurIdx, setKleurIdx] = useState(() => {
     if (!initial) return 0;
     const i = VAK_KLEUREN.findIndex((c) => c.kleur === initial.kleur);
@@ -210,6 +235,15 @@ function VakFormDialog({ initial, onSave, onCancel }) {
           style={{ marginBottom: 14 }}
         />
 
+        <label className="lbl">Datum van de toets (optioneel)</label>
+        <input
+          className="inp"
+          type="date"
+          value={testDate}
+          onChange={(e) => setTestDate(e.target.value)}
+          style={{ marginBottom: 14 }}
+        />
+
         <div
           style={{
             display: 'flex',
@@ -258,7 +292,8 @@ function VakFormDialog({ initial, onSave, onCancel }) {
                 naam: naam.trim(),
                 icon: icon.trim() || null,
                 kleur: kleur.kleur,
-                tint: kleur.tint
+                tint: kleur.tint,
+                test_date: testDate || null
               })
             }
             style={{
@@ -427,6 +462,37 @@ export default function VakkenScreen({ leerjaar, onLeerjaar, onBack }) {
         >
           {error}
         </div>
+      )}
+
+      {vakken.some((v) => v.test_date) && (
+        <button
+          className="tap"
+          onClick={async () => {
+            try {
+              await sortVakkenByTestDate(leerjaar);
+              await reload();
+            } catch (e) {
+              setError(e.message);
+            }
+          }}
+          style={{
+            border: 'none',
+            cursor: 'pointer',
+            background: '#fff',
+            color: 'var(--water)',
+            borderRadius: 11,
+            padding: '8px 12px',
+            fontWeight: 800,
+            fontSize: 12.5,
+            boxShadow: '0 3px 0 rgba(40,52,59,0.07)',
+            marginBottom: 10,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6
+          }}
+        >
+          📅 Sorteer op toetsdatum
+        </button>
       )}
 
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>

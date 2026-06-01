@@ -7,12 +7,15 @@ import {
   saveKidProgress,
   saveKidVakOrder
 } from '../../lib/storage.js';
+import { listVakken } from '../../lib/vakken.js';
+import { supabaseEnabled } from '../../lib/supabase.js';
 import ProfileScreen from './ProfileScreen.jsx';
 import WaterfallMap from './WaterfallMap.jsx';
-import PlanSheet from './PlanSheet.jsx';
 import QuizEngine from './QuizEngine.jsx';
 import ResultScreen from './ResultScreen.jsx';
 import TheoryScreen from './TheoryScreen.jsx';
+
+const LEERJAAR = 5;
 
 export default function KidApp({ onExit }) {
   const initial = loadKidLocal();
@@ -25,13 +28,17 @@ export default function KidApp({ onExit }) {
     });
     return init;
   });
+  // vakOrder = teacher-set volgorde. Kind kan deze niet meer wijzigen.
+  // Eerst uit localStorage (laatst gecachte teacher-volgorde), anders hardcoded.
   const [vakOrder, setVakOrder] = useState(initial.vakorder || Object.keys(D.vakken));
+  // vakkenMeta: per-key metadata (naam/kleur/tint/icon) — Supabase override
+  // van de hardcoded D.vakken wanneer beschikbaar.
+  const [vakkenMeta, setVakkenMeta] = useState(D.vakken);
   const [screen, setScreen] = useState(profile && profile.naam ? 'home' : 'profiel');
   const [active, setActive] = useState(null);
   const [result, setResult] = useState(null);
-  const [toast, setToast] = useState('');
 
-  // Hydrate from Supabase als configured — overschrijft alleen als er server-data is.
+  // Hydrate profiel + voortgang vanuit Supabase als beschikbaar.
   useEffect(() => {
     let cancelled = false;
     pullKidState().then((remote) => {
@@ -43,9 +50,6 @@ export default function KidApp({ onExit }) {
       if (remote.progress && Object.keys(remote.progress).length) {
         setProgress((p) => ({ ...p, ...remote.progress }));
       }
-      if (remote.vakorder && remote.vakorder.length) {
-        setVakOrder(remote.vakorder);
-      }
     });
     return () => {
       cancelled = true;
@@ -53,17 +57,49 @@ export default function KidApp({ onExit }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Vakken-volgorde + metadata van leerkracht ophalen.
+  useEffect(() => {
+    let cancelled = false;
+    if (!supabaseEnabled) return;
+    listVakken(LEERJAAR).then((vk) => {
+      if (cancelled || !vk?.length) return;
+      const active = vk.filter((v) => v.active);
+      // Bouw metadata-map met server-waarden als override.
+      const meta = { ...D.vakken };
+      for (const v of active) {
+        meta[v.key] = {
+          ...(meta[v.key] || {}),
+          naam: v.naam,
+          kleur: v.kleur,
+          tint: v.tint,
+          icon: v.icon,
+          test_date: v.test_date,
+          teacher: meta[v.key]?.teacher || 'ann'
+        };
+      }
+      setVakkenMeta(meta);
+      const order = active.map((v) => v.key);
+      if (order.length) {
+        setVakOrder(order);
+        saveKidVakOrder(order);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     saveKidProgress(progress);
   }, [progress]);
-  useEffect(() => {
-    saveKidVakOrder(vakOrder);
-  }, [vakOrder]);
 
   const isDone = (id) => Object.prototype.hasOwnProperty.call(progress, id);
 
   const streamNodes = useMemo(() => {
-    const ordered = [...D.nodes].sort((a, b) => {
+    // Filter nodes op vakken die nog bestaan in de teacher-config.
+    const allowed = new Set(vakOrder);
+    const filtered = D.nodes.filter((n) => allowed.has(n.vak));
+    const ordered = [...filtered].sort((a, b) => {
       const oa = vakOrder.indexOf(a.vak),
         ob = vakOrder.indexOf(b.vak);
       if (oa !== ob) return oa - ob;
@@ -77,7 +113,7 @@ export default function KidApp({ onExit }) {
       else if (!foundNow) {
         status = 'now';
         foundNow = true;
-      } else status = 'lock';
+      } else status = 'todo'; // niet meer 'lock' — alle nodes blijven tapbaar
       return { ...n, stars, status };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -94,11 +130,6 @@ export default function KidApp({ onExit }) {
   };
 
   const openNode = (n) => {
-    if (n.status === 'lock') {
-      setToast('Maak eerst het vorige onderdeel af! 💧');
-      setTimeout(() => setToast(''), 1800);
-      return;
-    }
     setActive(n);
     setScreen('quiz');
   };
@@ -121,8 +152,11 @@ export default function KidApp({ onExit }) {
     setResult({ ...res });
   };
 
-  const vakInfoOf = (n) => D.vakken[n.vak];
-  const teacherOf = (n) => D.teachers[D.vakken[n.vak].teacher];
+  const vakInfoOf = (n) => vakkenMeta[n.vak] || D.vakken[n.vak];
+  const teacherOf = (n) => {
+    const vi = vakInfoOf(n);
+    return D.teachers[vi?.teacher] || D.teachers.ann;
+  };
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
@@ -136,29 +170,16 @@ export default function KidApp({ onExit }) {
           onClose={() => setScreen('home')}
         />
       )}
-      {(screen === 'home' || screen === 'plan') && (
+      {screen === 'home' && (
         <WaterfallMap
           profile={profile}
-          leerjaar={5}
+          leerjaar={LEERJAAR}
           nodes={streamNodes}
           totalStars={totalStars}
-          vakken={D.vakken}
+          vakken={vakkenMeta}
           onOpenNode={openNode}
           onLeerjaar={() => {}}
           onProfiel={() => setScreen('profiel')}
-          onPlan={() => setScreen('plan')}
-        />
-      )}
-      {screen === 'plan' && (
-        <PlanSheet
-          vakOrder={vakOrder}
-          vakken={D.vakken}
-          nodes={D.nodes}
-          onSave={(o) => {
-            setVakOrder(o);
-            setScreen('home');
-          }}
-          onClose={() => setScreen('home')}
         />
       )}
       {screen === 'quiz' && active && !result && (
@@ -189,7 +210,6 @@ export default function KidApp({ onExit }) {
         <TheoryScreen result={result} teacher={teacherOf(active)} onBack={() => setScreen('quiz')} />
       )}
 
-      {toast && <div className="toast">{toast}</div>}
       {onExit && screen === 'home' && (
         <button onClick={onExit} className="exit-pill">
           ↩ rol
