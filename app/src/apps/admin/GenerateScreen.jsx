@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   REQUEST_STATUS_LABEL,
+  SOURCE_MODES,
   cancelGenerationRequest,
   createGenerationRequest,
   listGenerationRequests
@@ -136,6 +137,7 @@ export default function GenerateScreen({ leerjaar, onLeerjaar, onBack, onSeeQues
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [num, setNum] = useState(10);
+  const [sourceMode, setSourceMode] = useState('mix');
   const [error, setError] = useState(null);
 
   const reload = async () => {
@@ -212,7 +214,12 @@ export default function GenerateScreen({ leerjaar, onLeerjaar, onBack, onSeeQues
     setBusy(true);
     setError(null);
     try {
-      await createGenerationRequest({ leerjaar, vak: vak.key, num_questions: num });
+      await createGenerationRequest({
+        leerjaar,
+        vak: vak.key,
+        num_questions: num,
+        source_mode: sourceMode
+      });
       await reload();
     } catch (e) {
       setError(e.message);
@@ -302,12 +309,12 @@ export default function GenerateScreen({ leerjaar, onLeerjaar, onBack, onSeeQues
           background: '#eaf7fb',
           borderRadius: 12,
           padding: '8px 12px',
-          marginBottom: 10
+          marginBottom: 8
         }}
       >
         <span style={{ fontSize: 14 }}>🤖</span>
         <span style={{ flex: 1, fontSize: 11.5, fontWeight: 700, color: 'var(--ink)' }}>
-          De cron pakt nieuwe aanvragen op (elke nacht ~03u) en maakt vragen via Claude. Je ziet ze daarna onder{' '}
+          De cron pakt nieuwe aanvragen op (elke nacht ~03u) en maakt vragen via je LLM. Je ziet ze daarna onder{' '}
           <b>Vragen beheren</b>.
         </span>
         <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 800, color: 'var(--ink)' }}>
@@ -329,6 +336,59 @@ export default function GenerateScreen({ leerjaar, onLeerjaar, onBack, onSeeQues
             }}
           />
         </label>
+      </div>
+
+      <div
+        style={{
+          background: '#fff',
+          borderRadius: 12,
+          padding: '8px 10px',
+          marginBottom: 10,
+          boxShadow: '0 3px 0 rgba(40,52,59,0.06)'
+        }}
+      >
+        <div style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--ink-soft)', letterSpacing: 0.4, marginBottom: 5 }}>
+          BRON VAN DE VRAGEN
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {SOURCE_MODES.map((m) => {
+            const sel = sourceMode === m.key;
+            return (
+              <button
+                key={m.key}
+                className="tap"
+                onClick={() => setSourceMode(m.key)}
+                style={{
+                  flex: 1,
+                  minWidth: 92,
+                  padding: '8px 10px',
+                  borderRadius: 10,
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: sel ? 'var(--water)' : 'var(--cream)',
+                  color: sel ? '#fff' : 'var(--ink)',
+                  fontWeight: 800,
+                  fontSize: 12.5,
+                  textAlign: 'left'
+                }}
+                title={m.desc}
+              >
+                {m.label}
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: 10.5,
+                    color: sel ? 'rgba(255,255,255,0.85)' : 'var(--ink-soft)',
+                    marginTop: 2,
+                    lineHeight: 1.25
+                  }}
+                >
+                  {m.desc}
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {error && (
@@ -394,6 +454,20 @@ export default function GenerateScreen({ leerjaar, onLeerjaar, onBack, onSeeQues
                       >
                         <span style={{ color: 'var(--ink)', fontWeight: 800 }}>{r.vak}</span>
                         <span style={{ color: 'var(--ink-soft)' }}>· {r.num_questions} vragen</span>
+                        {r.source_mode && r.source_mode !== 'mix' && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 800,
+                              color: '#1689a8',
+                              background: '#defaff',
+                              borderRadius: 999,
+                              padding: '1px 7px'
+                            }}
+                          >
+                            {SOURCE_MODES.find((m) => m.key === r.source_mode)?.label}
+                          </span>
+                        )}
                         <span
                           style={{
                             marginLeft: 'auto',

@@ -3,24 +3,19 @@
  * Waterval — question generator
  *
  * Leest `generation_requests` waar status='queued', genereert vragen via een
- * LLM (default Gemini) op basis van de bronnen van die leerkracht voor dat
- * leerjaar/vak, en schrijft ze als nieuwe `question_banks` (status='pending_review')
+ * LLM op basis van de opgeladen bronnen + Vlaamse leerlijn (afhankelijk van
+ * source_mode), en schrijft ze als nieuwe `question_banks` (status='pending_review')
  * + `questions` rows (active=true, approved=false).
  *
- * ENV:
- *   SUPABASE_URL              — https://<project>.supabase.co
- *   SUPABASE_SERVICE_ROLE_KEY — sb_secret_... (NIET de anon-key!)
- *   LLM_PROVIDER              — 'gemini' (default) of 'anthropic'
- *   GEMINI_API_KEY            — verplicht als provider=gemini
- *   ANTHROPIC_API_KEY         — verplicht als provider=anthropic
- *   MODEL                     — optioneel; default per provider
- *   MAX_REQUESTS              — optioneel, default 10 per run
+ * Multimodaal: bestanden worden uit Supabase Storage gedownload en inline
+ * (base64) doorgegeven aan de gekozen provider.
+ *
+ * ENV: zie scripts/.env.example
  */
 
 import { createClient } from '@supabase/supabase-js';
 
-// Trim env-waarden — leading/trailing whitespace en wrapping quotes komen vaak
-// voor bij verkeerd geknipte secrets.
+// ────────── env validatie ──────────
 const trim = (v) => (v || '').toString().trim().replace(/^['"]|['"]$/g, '');
 const SUPABASE_URL = trim(process.env.SUPABASE_URL);
 const SUPABASE_KEY = trim(process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -30,26 +25,26 @@ const MAX_REQUESTS = parseInt(process.env.MAX_REQUESTS || '10', 10);
 const DEFAULT_MODEL = {
   gemini: 'gemini-2.5-flash',
   anthropic: 'claude-haiku-4-5-20251001',
-  'claude-code': undefined // laat de SDK de default van de CLI gebruiken
+  'claude-code': undefined
 };
 const MODEL = process.env.MODEL || DEFAULT_MODEL[PROVIDER] || DEFAULT_MODEL.gemini;
+
+// Cap individuele file size (inline base64 zou anders te groot worden).
+const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB
+const MAX_TOTAL_BYTES = 40 * 1024 * 1024; // 40 MB per request
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('Missing SUPABASE_URL of SUPABASE_SERVICE_ROLE_KEY');
   process.exit(1);
 }
 if (!/^https?:\/\//i.test(SUPABASE_URL)) {
-  console.error(
-    `Invalid SUPABASE_URL — moet beginnen met "https://". Gekregen: "${SUPABASE_URL.slice(0, 12)}…" (${SUPABASE_URL.length} chars).`
-  );
-  console.error('Controleer of je geen wrapping quotes of leading whitespace in de secret hebt.');
+  console.error(`Invalid SUPABASE_URL — moet beginnen met "https://". Gekregen: "${SUPABASE_URL.slice(0, 12)}…" (${SUPABASE_URL.length} chars).`);
   process.exit(1);
 }
 if (SUPABASE_KEY.length < 40) {
-  console.error(`SUPABASE_SERVICE_ROLE_KEY lijkt te kort (${SUPABASE_KEY.length} chars). Service-role key is meestal een lange JWT die met "eyJ" begint.`);
+  console.error(`SUPABASE_SERVICE_ROLE_KEY lijkt te kort (${SUPABASE_KEY.length} chars).`);
   process.exit(1);
 }
-
 if (PROVIDER === 'gemini' && !process.env.GEMINI_API_KEY) {
   console.error('LLM_PROVIDER=gemini, maar GEMINI_API_KEY ontbreekt.');
   process.exit(1);
@@ -59,8 +54,6 @@ if (PROVIDER === 'anthropic' && !process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 if (PROVIDER === 'claude-code') {
-  // Verwijder ANTHROPIC_API_KEY zodat de Claude Code CLI de Pro/Max-sessie gebruikt
-  // i.p.v. API-credits.
   if (process.env.ANTHROPIC_API_KEY) {
     console.log('• ANTHROPIC_API_KEY weggeknipt — Claude Code gebruikt je Pro-sessie.');
     delete process.env.ANTHROPIC_API_KEY;
@@ -71,31 +64,57 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false }
 });
 
-// ──────────────── Provider abstractie ────────────────
+// ────────── provider abstractie ──────────
 
-async function callGemini(prompt) {
+async function callGemini(prompt, files) {
   const { GoogleGenAI } = await import('@google/genai');
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const parts = [{ text: prompt }];
+  for (const f of files) {
+    parts.push({
+      inlineData: { mimeType: f.mimeType || 'application/octet-stream', data: f.base64 }
+    });
+  }
   const response = await ai.models.generateContent({
     model: MODEL,
-    contents: prompt,
+    contents: [{ role: 'user', parts }],
     config: {
       temperature: 0.7,
-      maxOutputTokens: 4096,
-      // Vraag Gemini om JSON-array terug te geven — verhoogt parse-succes.
+      maxOutputTokens: 8192,
       responseMimeType: 'application/json'
     }
   });
   return response.text || '';
 }
 
-async function callClaude(prompt) {
+function anthropicContent(prompt, files) {
+  const blocks = [];
+  for (const f of files) {
+    if (f.mimeType === 'application/pdf') {
+      blocks.push({
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: f.base64 }
+      });
+    } else if (f.mimeType?.startsWith('image/')) {
+      blocks.push({
+        type: 'image',
+        source: { type: 'base64', media_type: f.mimeType, data: f.base64 }
+      });
+    } else {
+      console.warn(`  ! ${f.fileName}: niet ondersteund mime ${f.mimeType}, overgeslagen`);
+    }
+  }
+  blocks.push({ type: 'text', text: prompt });
+  return blocks;
+}
+
+async function callClaude(prompt, files) {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const res = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 4096,
-    messages: [{ role: 'user', content: prompt }]
+    messages: [{ role: 'user', content: anthropicContent(prompt, files) }]
   });
   return res.content
     .filter((b) => b.type === 'text')
@@ -103,16 +122,23 @@ async function callClaude(prompt) {
     .join('');
 }
 
-// Gebruikt de geauthenticeerde Claude Code CLI lokaal — pakt je Pro/Max-abonnement
-// i.p.v. API-credits. Vereist `claude` in PATH en een actieve `/login` sessie.
-async function callClaudeCode(prompt) {
+async function callClaudeCode(prompt, files) {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
+  const content = anthropicContent(prompt, files);
+  // Voor multimodaal: stuur een async generator van messages.
+  async function* gen() {
+    yield {
+      type: 'user',
+      message: { role: 'user', content }
+    };
+  }
+  const promptInput = files.length > 0 ? gen() : prompt;
+
   let finalText = '';
   let resultSeen = false;
   for await (const msg of query({
-    prompt,
+    prompt: promptInput,
     options: {
-      // Eén-shot LLM-call: geen tools, geen project-context, één turn.
       allowedTools: [],
       settingSources: [],
       maxTurns: 1,
@@ -127,13 +153,8 @@ async function callClaudeCode(prompt) {
       }
     } else if (msg.type === 'result') {
       resultSeen = true;
-      if (msg.subtype !== 'success') {
-        throw new Error(`Claude Code SDK: ${msg.subtype}`);
-      }
-      // De SDK retourneert ook `result` als string (in de meeste versies).
-      if (typeof msg.result === 'string' && msg.result.length > finalText.length) {
-        finalText = msg.result;
-      }
+      if (msg.subtype !== 'success') throw new Error(`Claude Code SDK: ${msg.subtype}`);
+      if (typeof msg.result === 'string' && msg.result.length > finalText.length) finalText = msg.result;
     }
   }
   if (!resultSeen) throw new Error('Claude Code SDK gaf geen result-message terug.');
@@ -141,13 +162,13 @@ async function callClaudeCode(prompt) {
   return finalText;
 }
 
-async function callLLM(prompt) {
-  if (PROVIDER === 'anthropic') return callClaude(prompt);
-  if (PROVIDER === 'claude-code') return callClaudeCode(prompt);
-  return callGemini(prompt);
+async function callLLM(prompt, files = []) {
+  if (PROVIDER === 'anthropic') return callClaude(prompt, files);
+  if (PROVIDER === 'claude-code') return callClaudeCode(prompt, files);
+  return callGemini(prompt, files);
 }
 
-// ──────────────── Prompt + parsing ────────────────
+// ────────── prompt + parsing ──────────
 
 const TYPE_DESCRIPTIONS = {
   mc: '{"type":"mc","q":"vraag","options":["A","B","C","D"],"answer":<index 0-3>,"theory":{"titel":"...","text":"..."}}',
@@ -156,19 +177,38 @@ const TYPE_DESCRIPTIONS = {
   match: '{"type":"match","q":"instructie","pairs":[{"l":"links","r":"rechts"}],"theory":{"titel":"...","text":"..."}}'
 };
 
-function buildPrompt({ vak, leerjaar, num, sources }) {
-  const bronnen = (sources || [])
+function buildPrompt({ vak, leerjaar, num, sources, files, mode }) {
+  const bronnenLijst = (sources || [])
     .slice(0, 30)
-    .map((s) => `- ${s.title}${s.stream ? ` (${s.stream})` : ''}${s.vak ? ` [${s.vak}]` : ''}`)
+    .map((s) => `- ${s.title}${s.stream ? ` (${s.stream})` : ''}${s.vak ? ` [${s.vak}]` : ''}${s.file_name ? ` — ${s.file_name}` : ''}`)
     .join('\n');
-  const bronText = bronnen || '(geen specifieke bronnen aangeleverd — gebruik de standaard Vlaamse leerlijn)';
+
+  let bronInstructie;
+  if (mode === 'documents') {
+    if (files.length === 0) {
+      throw new Error('source_mode=documents maar geen bestanden beschikbaar voor deze (leerjaar, vak).');
+    }
+    bronInstructie = `**Belangrijk**: maak vragen UITSLUITEND op basis van de aangeleverde documenten (${files.length} bestand(en) bijgevoegd). Gebruik geen kennis buiten deze documenten. Als de documenten te beperkt zijn, maak liever minder vragen dan vragen te verzinnen.`;
+  } else if (mode === 'curriculum') {
+    bronInstructie = `Gebruik de standaard Vlaamse leerlijn voor leerjaar ${leerjaar}, vak "${vak}". Negeer eventuele opgeladen documenten.`;
+  } else {
+    // mix
+    if (files.length > 0) {
+      bronInstructie = `Gebruik de ${files.length} aangeleverde document(en) als hoofdbron. Vul aan waar nodig met de standaard Vlaamse leerlijn voor leerjaar ${leerjaar}.`;
+    } else {
+      bronInstructie = `Er zijn geen documenten opgeladen — gebruik de standaard Vlaamse leerlijn voor leerjaar ${leerjaar}, vak "${vak}".`;
+    }
+  }
+
+  const bronLijstSectie = bronnenLijst
+    ? `\n\nGekoppelde bronnen (metadata):\n${bronnenLijst}`
+    : '';
 
   return `Je bent een ervaren Vlaamse leerkracht lager onderwijs.
 
 Maak ${num} korte, kindvriendelijke kwisvragen voor leerlingen van leerjaar ${leerjaar} voor het vak "${vak}". Varieer de vraagtypes (mc, tf, fill, match) en zorg dat elke vraag een korte uitleg/theorie krijgt voor wie ze fout heeft.
 
-Beschikbare kennisbronnen van de leerkracht:
-${bronText}
+${bronInstructie}${bronLijstSectie}
 
 Antwoord UITSLUITEND met geldige JSON: een array van objecten. Elk object volgt exact een van deze schema's:
 - ${TYPE_DESCRIPTIONS.mc}
@@ -187,7 +227,6 @@ function extractJSON(raw) {
   if (!raw) return null;
   let s = String(raw).trim();
   s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  // Sommige modellen wrappen in een object { "questions": [...] }
   if (s.startsWith('{')) {
     try {
       const obj = JSON.parse(s);
@@ -238,30 +277,88 @@ function validateQuestion(x) {
   return out;
 }
 
-// ──────────────── Supabase helpers ────────────────
+// ────────── Supabase helpers ──────────
 
 async function fetchSources(teacherId, leerjaar, vak) {
   const { data, error } = await supabase
     .from('sources')
-    .select('title,stream,vak,file_name')
+    .select('id,title,stream,vak,file_name,storage_path,size_bytes,mime_type')
     .eq('teacher_id', teacherId)
     .eq('leerjaar', leerjaar);
   if (error) {
     console.warn('sources fetch:', error.message);
     return [];
   }
+  // Houd vakgebonden bronnen voor dit vak + de vakoverschrijdende (vak=null).
   return (data || []).filter((s) => !s.vak || s.vak === vak);
 }
 
+async function downloadFiles(sources) {
+  const out = [];
+  let total = 0;
+  for (const s of sources) {
+    if (!s.storage_path) continue;
+    if (s.size_bytes && s.size_bytes > MAX_FILE_BYTES) {
+      console.warn(`  ! ${s.title} (${(s.size_bytes / 1024 / 1024).toFixed(1)}MB) > ${MAX_FILE_BYTES / 1024 / 1024}MB cap — overgeslagen`);
+      continue;
+    }
+    if (total + (s.size_bytes || 0) > MAX_TOTAL_BYTES) {
+      console.warn(`  ! Totale request size > ${MAX_TOTAL_BYTES / 1024 / 1024}MB — stop met meer bestanden bij te voegen`);
+      break;
+    }
+    const { data, error } = await supabase.storage.from('sources').download(s.storage_path);
+    if (error) {
+      console.warn(`  ! download mislukt voor ${s.title}: ${error.message}`);
+      continue;
+    }
+    const buf = Buffer.from(await data.arrayBuffer());
+    if (buf.length > MAX_FILE_BYTES) {
+      console.warn(`  ! ${s.title} (${(buf.length / 1024 / 1024).toFixed(1)}MB) > ${MAX_FILE_BYTES / 1024 / 1024}MB cap — overgeslagen`);
+      continue;
+    }
+    out.push({
+      fileName: s.file_name || s.title,
+      title: s.title,
+      mimeType: s.mime_type || guessMime(s.file_name),
+      base64: buf.toString('base64'),
+      size: buf.length
+    });
+    total += buf.length;
+  }
+  return out;
+}
+
+function guessMime(name) {
+  if (!name) return 'application/octet-stream';
+  const ext = name.toLowerCase().slice(name.lastIndexOf('.'));
+  if (ext === '.pdf') return 'application/pdf';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.heic') return 'image/heic';
+  return 'application/octet-stream';
+}
+
 async function generate(req) {
-  const sources = await fetchSources(req.teacher_id, req.leerjaar, req.vak);
+  const mode = req.source_mode || 'mix';
+  const sources = mode === 'curriculum' ? [] : await fetchSources(req.teacher_id, req.leerjaar, req.vak);
+  let files = [];
+  if (mode !== 'curriculum') {
+    files = await downloadFiles(sources);
+    if (files.length > 0) {
+      const totalMB = (files.reduce((s, f) => s + f.size, 0) / 1024 / 1024).toFixed(1);
+      console.log(`  📎 ${files.length} bestand(en) bijgevoegd (${totalMB} MB totaal)`);
+    }
+  }
   const prompt = buildPrompt({
     vak: req.vak,
     leerjaar: req.leerjaar,
     num: req.num_questions,
-    sources
+    sources,
+    files,
+    mode
   });
-  const text = await callLLM(prompt);
+  const text = await callLLM(prompt, files);
   const arr = extractJSON(text);
   if (!arr) throw new Error(`Model gaf geen geldige JSON terug (provider=${PROVIDER}, model=${MODEL}).`);
   const valid = arr.map(validateQuestion).filter(Boolean);
@@ -270,7 +367,8 @@ async function generate(req) {
 }
 
 async function processRequest(req) {
-  console.log(`▶ ${req.id} — ${req.vak} (leerjaar ${req.leerjaar}, n=${req.num_questions})`);
+  const mode = req.source_mode || 'mix';
+  console.log(`▶ ${req.id} — ${req.vak} (leerjaar ${req.leerjaar}, n=${req.num_questions}, mode=${mode})`);
 
   await supabase
     .from('generation_requests')
@@ -307,11 +405,7 @@ async function processRequest(req) {
 
     await supabase
       .from('generation_requests')
-      .update({
-        status: 'done',
-        completed_at: new Date().toISOString(),
-        bank_id: bank.id
-      })
+      .update({ status: 'done', completed_at: new Date().toISOString(), bank_id: bank.id })
       .eq('id', req.id);
 
     console.log(`  ✓ ${questions.length} vragen → bank ${bank.id}`);
@@ -329,10 +423,10 @@ async function processRequest(req) {
 }
 
 async function main() {
-  console.log(`Provider: ${PROVIDER}  Model: ${MODEL}`);
+  console.log(`Provider: ${PROVIDER}  Model: ${MODEL || '(default)'}`);
   const { data: queue, error } = await supabase
     .from('generation_requests')
-    .select('id,teacher_id,leerjaar,vak,num_questions')
+    .select('id,teacher_id,leerjaar,vak,num_questions,source_mode')
     .eq('status', 'queued')
     .order('created_at', { ascending: true })
     .limit(MAX_REQUESTS);

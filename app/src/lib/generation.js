@@ -10,7 +10,7 @@ export async function listGenerationRequests({ leerjaar }) {
   if (!uid) return [];
   let q = supabase
     .from('generation_requests')
-    .select('id,leerjaar,vak,num_questions,status,error,bank_id,created_at,started_at,completed_at')
+    .select('id,leerjaar,vak,num_questions,source_mode,status,error,bank_id,created_at,started_at,completed_at')
     .eq('teacher_id', uid)
     .order('created_at', { ascending: false })
     .limit(50);
@@ -23,10 +23,19 @@ export async function listGenerationRequests({ leerjaar }) {
   return data || [];
 }
 
-export async function createGenerationRequest({ leerjaar, vak, num_questions = 10 }) {
+export const SOURCE_MODES = [
+  { key: 'mix', label: 'Mix', desc: 'Bronnen + Vlaamse leerlijn als aanvulling' },
+  { key: 'documents', label: 'Enkel bronnen', desc: 'Uitsluitend op basis van opgeladen documenten' },
+  { key: 'curriculum', label: 'Enkel leerlijn', desc: 'Standaard Vlaamse leerlijn (geen bronnen nodig)' }
+];
+
+export async function createGenerationRequest({ leerjaar, vak, num_questions = 10, source_mode = 'mix' }) {
   if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
   const uid = await ensureUser();
   if (!uid) throw new Error('Niet aangemeld.');
+  if (!['mix', 'documents', 'curriculum'].includes(source_mode)) {
+    throw new Error(`Onbekende source_mode: ${source_mode}`);
+  }
   const { data, error } = await supabase
     .from('generation_requests')
     .insert({
@@ -34,6 +43,7 @@ export async function createGenerationRequest({ leerjaar, vak, num_questions = 1
       leerjaar,
       vak,
       num_questions: Math.max(1, Math.min(100, num_questions)),
+      source_mode,
       status: 'queued'
     })
     .select()
