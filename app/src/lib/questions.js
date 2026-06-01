@@ -59,6 +59,37 @@ export async function deleteQuestion(id) {
   if (error) throw new Error(error.message);
 }
 
+export async function setQuestionApproved(id, approved) {
+  if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
+  await ensureUser();
+  const { error } = await supabase.from('questions').update({ approved }).eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+// Zet de bank-status naar 'published' zodat goedgekeurde + actieve vragen
+// zichtbaar worden voor leerlingen.
+export async function publishBank(bankId) {
+  if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
+  await ensureUser();
+  const { error } = await supabase
+    .from('question_banks')
+    .update({ status: 'published', published_at: new Date().toISOString() })
+    .eq('id', bankId);
+  if (error) throw new Error(error.message);
+}
+
+// Eén-knop-werkflow: alle vragen in een bank goedkeuren + de bank publiceren.
+export async function approveAndPublishBank(bankId) {
+  if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
+  await ensureUser();
+  const { error: aErr } = await supabase
+    .from('questions')
+    .update({ approved: true })
+    .eq('bank_id', bankId);
+  if (aErr) throw new Error(aErr.message);
+  await publishBank(bankId);
+}
+
 export async function updateQuestion(id, patch) {
   if (!supabaseEnabled) throw new Error('Supabase niet geconfigureerd.');
   await ensureUser();

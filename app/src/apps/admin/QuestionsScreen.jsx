@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { deleteQuestion, listQuestions, setQuestionActive } from '../../lib/questions.js';
+import {
+  approveAndPublishBank,
+  deleteQuestion,
+  listQuestions,
+  publishBank,
+  setQuestionActive,
+  setQuestionApproved
+} from '../../lib/questions.js';
 import { listVakken } from '../../lib/vakken.js';
 import { supabaseEnabled } from '../../lib/supabase.js';
 
@@ -24,8 +31,9 @@ function answerText(q) {
   return '—';
 }
 
-function QuestionCard({ q, vakInfo, onToggle, onDelete }) {
+function QuestionCard({ q, vakInfo, onToggle, onDelete, onToggleApproved }) {
   const isActive = q.active && !q.archived_at;
+  const isPending = q.bank?.status === 'pending_review';
   return (
     <div
       style={{
@@ -78,11 +86,32 @@ function QuestionCard({ q, vakInfo, onToggle, onDelete }) {
             {STATUS_LABEL[q.bank.status] || q.bank.status}
           </span>
         )}
+        {isPending && (
+          <button
+            className="tap"
+            onClick={() => onToggleApproved(q)}
+            title={q.approved ? 'Goedgekeurd — klik om af te wijzen' : 'Klik om goed te keuren'}
+            style={{
+              marginLeft: 'auto',
+              border: 'none',
+              cursor: 'pointer',
+              borderRadius: 999,
+              padding: '4px 10px',
+              fontWeight: 800,
+              fontSize: 11.5,
+              background: q.approved ? 'var(--leaf)' : '#fff',
+              color: q.approved ? '#fff' : 'var(--ink-soft)',
+              boxShadow: q.approved ? 'none' : '0 0 0 1.5px var(--border)'
+            }}
+          >
+            {q.approved ? '✓ Goedgekeurd' : '◯ Keur goed'}
+          </button>
+        )}
         <button
           className="tap"
           onClick={() => onToggle(q)}
           style={{
-            marginLeft: 'auto',
+            marginLeft: isPending ? 0 : 'auto',
             border: 'none',
             cursor: 'pointer',
             borderRadius: 999,
@@ -202,10 +231,57 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
     }
   };
 
+  const toggleApproved = async (q) => {
+    try {
+      await setQuestionApproved(q.id, !q.approved);
+      reload();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const remove = async (q) => {
     if (!confirm('Deze vraag definitief verwijderen?')) return;
     try {
       await deleteQuestion(q.id);
+      reload();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  // Per-bank: rij goedkeur-status, voor banner-summary + per-bank publiceer-knop.
+  const pendingBanks = useMemo(() => {
+    const byBank = new Map();
+    for (const q of questions) {
+      if (q.bank?.status !== 'pending_review') continue;
+      const b = byBank.get(q.bank_id) || { bank: q.bank, bankId: q.bank_id, total: 0, approved: 0 };
+      b.total += 1;
+      if (q.approved) b.approved += 1;
+      byBank.set(q.bank_id, b);
+    }
+    return [...byBank.values()];
+  }, [questions]);
+
+  const totalPending = pendingBanks.reduce((s, b) => s + b.total, 0);
+
+  const approveAndPublishAll = async () => {
+    if (!pendingBanks.length) return;
+    if (!confirm(`Alle ${totalPending} vragen goedkeuren en ${pendingBanks.length} batch(es) publiceren?`)) return;
+    try {
+      for (const b of pendingBanks) {
+        await approveAndPublishBank(b.bankId);
+      }
+      reload();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const publishOneBank = async (bankId) => {
+    if (!confirm('Deze batch publiceren? Enkel goedgekeurde vragen worden zichtbaar voor leerlingen.')) return;
+    try {
+      await publishBank(bankId);
       reload();
     } catch (e) {
       setError(e.message);
@@ -296,6 +372,89 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
         Toon ook inactieve vragen
       </label>
 
+      {pendingBanks.length > 0 && (
+        <div
+          style={{
+            background: '#fff7e0',
+            border: '1.5px solid #f0d28a',
+            borderRadius: 14,
+            padding: '12px 14px',
+            marginBottom: 10,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 22 }}>⏳</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontFamily: 'var(--display)', fontWeight: 700, fontSize: 15, color: '#8a6d18' }}>
+                {totalPending} {totalPending === 1 ? 'vraag wacht' : 'vragen wachten'} op nakijk
+              </div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: '#a07a1c' }}>
+                in {pendingBanks.length} {pendingBanks.length === 1 ? 'batch' : 'batches'} — keur ze goed om ze zichtbaar te maken voor leerlingen
+              </div>
+            </div>
+            <button
+              className="cta tap"
+              onClick={approveAndPublishAll}
+              style={{
+                background: 'var(--leaf)',
+                boxShadow: '0 4px 0 var(--leaf-dark)',
+                padding: '10px 14px',
+                fontSize: 13
+              }}
+            >
+              ✓ Alles + publiceer
+            </button>
+          </div>
+          {pendingBanks.length > 1 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {pendingBanks.map((b) => (
+                <div
+                  key={b.bankId}
+                  style={{
+                    background: '#fff',
+                    borderRadius: 10,
+                    padding: '7px 11px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: 'var(--ink)'
+                  }}
+                >
+                  <span style={{ fontFamily: 'var(--display)', fontWeight: 700 }}>
+                    Batch — {b.total} vragen
+                  </span>
+                  <span style={{ color: 'var(--leaf-dark)', fontWeight: 800 }}>· {b.approved} goedgekeurd</span>
+                  <button
+                    className="tap"
+                    onClick={() => publishOneBank(b.bankId)}
+                    disabled={b.approved === 0}
+                    style={{
+                      marginLeft: 'auto',
+                      border: 'none',
+                      background: b.approved > 0 ? 'var(--water)' : '#ece6da',
+                      color: b.approved > 0 ? '#fff' : 'var(--ink-soft)',
+                      cursor: b.approved > 0 ? 'pointer' : 'default',
+                      borderRadius: 999,
+                      padding: '4px 10px',
+                      fontSize: 11,
+                      fontWeight: 800,
+                      boxShadow: b.approved > 0 ? '0 3px 0 var(--water-dark)' : 'none'
+                    }}
+                  >
+                    📤 Publiceer batch
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {error && (
         <div
           style={{
@@ -334,6 +493,7 @@ export default function QuestionsScreen({ leerjaar, onLeerjaar, onBack }) {
               vakInfo={vakInfo[q.vak]}
               onToggle={toggle}
               onDelete={remove}
+              onToggleApproved={toggleApproved}
             />
           ))
         )}
