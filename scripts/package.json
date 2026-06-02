@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "node --env-file-if-exists=.env generate-questions.mjs"
+    "generate": "node --env-file-if-exists=.env generate-questions.mjs",
+    "extract": "node --env-file-if-exists=.env extract-onthoudmap.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.16",

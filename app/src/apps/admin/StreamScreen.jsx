@@ -33,7 +33,7 @@ export const STREAMS = {
   }
 };
 
-const ACCEPT_TYPES = 'application/pdf,image/*';
+const ACCEPT_TYPES = 'application/pdf,image/*,text/markdown,text/plain,.md,.txt';
 
 function formatBytes(b) {
   if (!b && b !== 0) return '';
@@ -44,6 +44,8 @@ function formatBytes(b) {
 
 function iconFor(file) {
   if (file.type?.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif)$/i.test(file.name)) return '🖼️';
+  if (file.type === 'text/markdown' || /\.md$/i.test(file.name)) return '📝';
+  if (file.type === 'text/plain' || /\.txt$/i.test(file.name)) return '📋';
   return '📄';
 }
 

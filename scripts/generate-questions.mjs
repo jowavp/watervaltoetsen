@@ -66,15 +66,33 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 // ────────── provider abstractie ──────────
 
+function isTextMime(mime) {
+  return mime === 'text/markdown' || mime === 'text/plain';
+}
+
+function inlineTextBlock(f) {
+  const text = f.text != null ? f.text : '';
+  return `\n\n--- BIJGEVOEGD DOCUMENT: ${f.fileName} ---\n${text}\n--- EINDE DOCUMENT ---\n`;
+}
+
 async function callGemini(prompt, files) {
   const { GoogleGenAI } = await import('@google/genai');
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const parts = [{ text: prompt }];
+
+  // Splits in tekst-bestanden (inline in prompt) en binaries (inlineData parts).
+  let combinedPrompt = prompt;
+  const binaryParts = [];
   for (const f of files) {
-    parts.push({
-      inlineData: { mimeType: f.mimeType || 'application/octet-stream', data: f.base64 }
-    });
+    if (isTextMime(f.mimeType)) {
+      combinedPrompt += inlineTextBlock(f);
+    } else {
+      binaryParts.push({
+        inlineData: { mimeType: f.mimeType || 'application/octet-stream', data: f.base64 }
+      });
+    }
   }
+  const parts = [{ text: combinedPrompt }, ...binaryParts];
+
   const response = await ai.models.generateContent({
     model: MODEL,
     contents: [{ role: 'user', parts }],
@@ -89,8 +107,11 @@ async function callGemini(prompt, files) {
 
 function anthropicContent(prompt, files) {
   const blocks = [];
+  let combinedPrompt = prompt;
   for (const f of files) {
-    if (f.mimeType === 'application/pdf') {
+    if (isTextMime(f.mimeType)) {
+      combinedPrompt += inlineTextBlock(f);
+    } else if (f.mimeType === 'application/pdf') {
       blocks.push({
         type: 'document',
         source: { type: 'base64', media_type: 'application/pdf', data: f.base64 }
@@ -104,7 +125,7 @@ function anthropicContent(prompt, files) {
       console.warn(`  ! ${f.fileName}: niet ondersteund mime ${f.mimeType}, overgeslagen`);
     }
   }
-  blocks.push({ type: 'text', text: prompt });
+  blocks.push({ type: 'text', text: combinedPrompt });
   return blocks;
 }
 
@@ -390,11 +411,14 @@ async function downloadFiles(sources) {
       console.warn(`  ! ${s.title} (${(buf.length / 1024 / 1024).toFixed(1)}MB) > ${MAX_FILE_BYTES / 1024 / 1024}MB cap — overgeslagen`);
       continue;
     }
+    const mimeType = s.mime_type || guessMime(s.file_name);
+    const isText = mimeType === 'text/markdown' || mimeType === 'text/plain';
     out.push({
       fileName: s.file_name || s.title,
       title: s.title,
-      mimeType: s.mime_type || guessMime(s.file_name),
-      base64: buf.toString('base64'),
+      mimeType,
+      base64: isText ? null : buf.toString('base64'),
+      text: isText ? buf.toString('utf-8') : null,
       size: buf.length
     });
     total += buf.length;
@@ -410,6 +434,8 @@ function guessMime(name) {
   if (ext === '.png') return 'image/png';
   if (ext === '.webp') return 'image/webp';
   if (ext === '.heic') return 'image/heic';
+  if (ext === '.md') return 'text/markdown';
+  if (ext === '.txt') return 'text/plain';
   return 'application/octet-stream';
 }
 

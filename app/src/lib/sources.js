@@ -47,6 +47,18 @@ function randomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+function inferContentType(file) {
+  if (file.type) return file.type;
+  const name = (file.name || '').toLowerCase();
+  if (name.endsWith('.md')) return 'text/markdown';
+  if (name.endsWith('.txt')) return 'text/plain';
+  if (name.endsWith('.pdf')) return 'application/pdf';
+  if (name.endsWith('.png')) return 'image/png';
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  if (name.endsWith('.webp')) return 'image/webp';
+  return 'application/octet-stream';
+}
+
 // Upload één bestand naar Storage en geef het pad terug.
 // path-conventie: <uid>/<leerjaar>/<stream>/<uuid>-<safe filename>
 export async function uploadSourceFile({ file, leerjaar, stream }) {
@@ -54,10 +66,11 @@ export async function uploadSourceFile({ file, leerjaar, stream }) {
   const uid = await ensureUser();
   if (!uid) throw new Error('Niet aangemeld.');
   const path = `${uid}/${leerjaar}/${stream}/${randomId()}-${safeName(file.name)}`;
+  const contentType = inferContentType(file);
   let result;
   try {
     result = await supabase.storage.from(BUCKET).upload(path, file, {
-      contentType: file.type || 'application/octet-stream',
+      contentType,
       cacheControl: '3600',
       upsert: false
     });
@@ -83,7 +96,7 @@ export async function uploadSourceFile({ file, leerjaar, stream }) {
     }
     throw new Error(`Upload mislukt${status}: ${error.message}`);
   }
-  return { path, file_name: file.name, size: file.size, mime: file.type };
+  return { path, file_name: file.name, size: file.size, mime: contentType };
 }
 
 // Maak een tijdelijke signed URL aan zodat de browser het bestand kan ophalen.
