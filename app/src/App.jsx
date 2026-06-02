@@ -3,6 +3,7 @@ import { Druppie, Teacher } from './components/Characters.jsx';
 import KidApp from './apps/kid/KidApp.jsx';
 import AdminApp from './apps/admin/AdminApp.jsx';
 import {
+  getValidSession,
   isTeacherEmail,
   signInWithGoogle,
   signOut,
@@ -210,13 +211,29 @@ function RolePicker({ user, onPick, onSignOut }) {
 }
 
 function Loading() {
-  const [showReset, setShowReset] = useState(false);
+  const [showSoftReset, setShowSoftReset] = useState(false);
+  const [showHardReset, setShowHardReset] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setShowReset(true), 4000);
-    return () => clearTimeout(t);
+    const t1 = setTimeout(() => setShowSoftReset(true), 2500);
+    const t2 = setTimeout(() => setShowHardReset(true), 6000);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, []);
 
+  // Zachte reset: enkel auth + app-cache wissen, service worker laten staan.
+  const softReset = async () => {
+    try {
+      await signOut();
+    } catch (e) {
+      console.warn('[reset/soft] signOut failed:', e);
+    }
+    window.location.replace(window.location.pathname + '?retry=' + Date.now());
+  };
+
+  // Harde reset: alles wegblazen, inclusief service worker en alle caches.
   const hardReset = async () => {
     try {
       localStorage.clear();
@@ -232,9 +249,8 @@ function Loading() {
         await Promise.all(keys.map((k) => caches.delete(k)));
       }
     } catch (e) {
-      console.warn('[reset] cleanup failed:', e);
+      console.warn('[reset/hard] cleanup failed:', e);
     }
-    // Forceer een netwerk-bypass reload
     window.location.replace(window.location.pathname + '?nocache=' + Date.now());
   };
 
@@ -244,26 +260,46 @@ function Loading() {
       style={{
         background: 'linear-gradient(180deg,#eaf7fb,#fbf6ec 70%)',
         alignItems: 'center',
-        justifyContent: 'center'
+        justifyContent: 'center',
+        gap: 14
       }}
     >
       <Druppie size={88} mood="happy" />
-      {showReset && (
+      {showSoftReset && (
+        <button
+          onClick={softReset}
+          style={{
+            marginTop: 14,
+            background: '#fff',
+            border: 'none',
+            borderRadius: 14,
+            padding: '11px 18px',
+            color: 'var(--water-dark)',
+            fontFamily: 'var(--display)',
+            fontSize: 14,
+            fontWeight: 700,
+            cursor: 'pointer',
+            boxShadow: '0 4px 0 rgba(40,52,59,0.08)'
+          }}
+        >
+          Opnieuw aanmelden
+        </button>
+      )}
+      {showHardReset && (
         <button
           onClick={hardReset}
           style={{
-            marginTop: 28,
             background: 'rgba(40,52,59,0.06)',
             border: 'none',
             borderRadius: 999,
             padding: '8px 14px',
             color: 'var(--ink-soft)',
-            fontSize: 12,
+            fontSize: 11,
             fontWeight: 800,
             cursor: 'pointer'
           }}
         >
-          ↻ Vastgelopen? Klik om opnieuw te starten
+          ↻ Volledige reset (cache wissen)
         </button>
       )}
     </div>
@@ -311,9 +347,9 @@ function Shell() {
 
     (async () => {
       try {
-        const { data } = await supabase.auth.getSession();
+        const session = await getValidSession();
         if (cancelled) return;
-        await settleUser(data?.session?.user || null);
+        await settleUser(session?.user || null);
       } catch (e) {
         console.warn('[shell] bootstrap failed:', e);
       } finally {

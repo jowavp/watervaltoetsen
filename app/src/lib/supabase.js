@@ -17,38 +17,83 @@ export const supabase = supabaseEnabled
   : null;
 
 export function appBaseUrl() {
-  // BASE_URL is '/' lokaal, '/watervaltoetsen/' op Pages.
   return window.location.origin + import.meta.env.BASE_URL;
 }
 
-// Returnt de huidige user-id of null als niet ingelogd.
-// Sinds de auth-redesign maakt deze functie geen sessies meer aan — de
-// sign-in flow is verantwoordelijk daarvoor.
-export async function ensureUser() {
+// Generieke timeout-helper. Faalt liever snel met een error dan eindeloos
+// te wachten op een netwerk-call.
+export function withTimeout(promise, ms, label = 'timeout') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} (${ms}ms)`)), ms))
+  ]);
+}
+
+// Geeft een geldige sessie terug of `null`. Behandelt expired access tokens
+// expliciet en faalt snel als refresh hangt.
+export async function getValidSession({ timeoutMs = 6000 } = {}) {
   if (!supabase) return null;
-  const { data } = await supabase.auth.getSession();
-  return data?.session?.user?.id ?? null;
+  let session = null;
+  try {
+    const { data } = await withTimeout(supabase.auth.getSession(), timeoutMs, 'getSession');
+    session = data?.session || null;
+  } catch (e) {
+    console.warn('[auth] getSession failed:', e.message);
+    return null;
+  }
+  if (!session) return null;
+
+  // Check expiry — refresh wanneer access token binnen 10s verloopt.
+  const expiresAtMs = session.expires_at ? session.expires_at * 1000 : 0;
+  if (expiresAtMs && expiresAtMs < Date.now() + 10_000) {
+    try {
+      const { data, error } = await withTimeout(
+        supabase.auth.refreshSession(),
+        timeoutMs,
+        'refreshSession'
+      );
+      if (error || !data?.session) {
+        console.warn('[auth] refreshSession failed:', error?.message || 'no session');
+        return null;
+      }
+      return data.session;
+    } catch (e) {
+      console.warn('[auth] refresh timed out:', e.message);
+      return null;
+    }
+  }
+  return session;
+}
+
+// Backward-compat: andere lib-bestanden gebruiken nog ensureUser.
+export async function ensureUser() {
+  const session = await getValidSession();
+  return session?.user?.id ?? null;
 }
 
 export async function currentUser() {
-  if (!supabase) return null;
-  const { data } = await supabase.auth.getUser();
-  return data?.user || null;
+  const session = await getValidSession();
+  return session?.user || null;
 }
 
-// Check de teacher_emails allowlist. Case-insensitive.
-export async function isTeacherEmail(email) {
+export async function isTeacherEmail(email, { timeoutMs = 5000 } = {}) {
   if (!supabase || !email) return false;
-  const { data, error } = await supabase
-    .from('teacher_emails')
-    .select('email')
-    .ilike('email', email)
-    .maybeSingle();
-  if (error) {
-    console.warn('[teacher_emails] check:', error.message);
+  try {
+    const result = await withTimeout(
+      supabase.from('teacher_emails').select('email').ilike('email', email).maybeSingle(),
+      timeoutMs,
+      'teacher_emails'
+    );
+    const { data, error } = result || {};
+    if (error) {
+      console.warn('[teacher_emails] check:', error.message);
+      return false;
+    }
+    return Boolean(data);
+  } catch (e) {
+    console.warn('[teacher_emails] timeout/error:', e.message);
     return false;
   }
-  return Boolean(data);
 }
 
 export async function signInWithGoogle() {
@@ -63,16 +108,29 @@ export async function signInWithGoogle() {
   if (error) throw new Error(error.message);
 }
 
-export async function signOut() {
+export async function signOut({ clearLocal = true } = {}) {
   if (!supabase) return;
-  // Lokale cache opruimen zodat een volgende gebruiker op hetzelfde toestel
-  // geen restjes van de vorige sessie ziet.
-  try {
-    for (const k of ['wv_profile', 'wv_progress', 'wv_vakorder', 'wv_teacher']) {
-      localStorage.removeItem(k);
+  if (clearLocal) {
+    try {
+      for (const k of ['wv_profile', 'wv_progress', 'wv_vakorder', 'wv_teacher']) {
+        localStorage.removeItem(k);
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* private mode, quota — negeren */
   }
-  await supabase.auth.signOut();
+  try {
+    await withTimeout(supabase.auth.signOut(), 3000, 'signOut');
+  } catch (e) {
+    console.warn('[auth] signOut timeout — manueel wissen', e.message);
+    // Fallback: wis Supabase auth-tokens manueel zodat de gebruiker tenminste
+    // doorkan naar de sign-in flow.
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith('sb-') && k.endsWith('-auth-token')) {
+          localStorage.removeItem(k);
+        }
+      }
+    } catch {}
+  }
 }
