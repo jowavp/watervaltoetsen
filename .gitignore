@@ -8,3 +8,13 @@ dist/
 # Originele handoff bundle — referentie, niet voor publicatie
 extracted/
 *.zip
+
+# Otto's persoonlijke onthoudmap-PDFs — privacy, niet in repo
+Onthoudmap/
+*.pdf
+!app/public/**/*.pdf
+!supabase/**/*.pdf
+
+# Screenshots / test artifacts
+app/appscreenshot*.png
+appscreenshot*.png
